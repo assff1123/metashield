@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>ko</string>
+	<key>CFBundleDisplayName</key>
+	<string>MetaShield</string>
+	<key>CFBundleExecutable</key>
+	<string>MetaShieldShare</string>
+	<key>CFBundleIdentifier</key>
+	<string>kr.metashield.app.share</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>MetaShield Share</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.3.2</string>
+	<key>CFBundleVersion</key>
+	<string>15</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>NSExtensionActivationRule</key>
+			<dict>
+				<key>NSExtensionActivationSupportsImageWithMaxCount</key>
+				<integer>20</integer>
+			</dict>
+		</dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.share-services</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>MetaShieldShare.MetaShieldShareViewController</string>
+	</dict>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>정리된 이미지를 사진 보관함에 새 사진으로 추가합니다.</string>
+</dict>
+</plist>
