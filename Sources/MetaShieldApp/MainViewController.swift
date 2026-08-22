@@ -19,7 +19,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
   private let statusLabel = NSTextField(wrappingLabelWithString: "이미지를 이곳에 놓거나 아래 버튼으로 선택하세요.")
   private let chooseButton = NSButton(title: "이미지 선택…", target: nil, action: nil)
   private let photoPermissionButton = NSButton(
-    title: "사진 앱 권한 연결…", target: nil, action: nil)
+    title: "사진 권한 미리 연결… (선택)", target: nil, action: nil)
   private let spinner = NSProgressIndicator()
   private let updateToggle = NSButton(
     checkboxWithTitle: "새 버전 확인 (GitHub)", target: nil, action: nil)
@@ -65,7 +65,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     photoPermissionButton.bezelStyle = .rounded
     photoPermissionButton.controlSize = .large
     photoPermissionButton.setAccessibilityHelp(
-      "사진 앱 공유 확장의 사진 추가 권한을 한 번 설정합니다. 시스템 공유 창에서 MetaShield를 선택하세요.")
+      "선택 사항: 사진 앱 공유 확장의 사진 추가 권한을 미리 허용해 둡니다. 연결하지 않아도 사진 앱에서 처음 공유할 때 같은 권한 창이 나타납니다. 시스템 공유 창에서 MetaShield를 선택하세요.")
 
     spinner.style = .spinning
     spinner.controlSize = .small

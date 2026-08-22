@@ -143,10 +143,16 @@ The Finder command is a bundle-contained AppKit Service. MetaShield does not cop
 workflow, helper, or background agent outside the app bundle. PNG inputs are verified
 and replaced in place; other still-image formats produce a uniquely named `.clean.png`
 beside the source. Releases from 0.3.8 onward remove the legacy 0.3.7-and-earlier
-workflow the first time they launch. The main window's `사진 앱 권한 연결…` button opens
-Apple's share picker with a metadata-free setup image. Select MetaShield there once to
-grant the share extension's add-only Photos permission; the setup image is never
-imported. macOS may still show its fixed Copy/Edit Extensions rows in that picker.
+workflow the first time they launch. The app also declares itself an alternate viewer
+for images, so dragging files onto the MetaShield Dock icon or choosing Finder's
+`Open With > MetaShield` runs the same headless sanitization as the Service; MetaShield
+never becomes the default handler for any image type. Finder-side processing needs no
+TCC permission at all. The main window's `사진 권한 미리 연결… (선택)` button opens
+Apple's share picker with a metadata-free setup image. Selecting MetaShield there
+grants the share extension's add-only Photos permission ahead of time; the step is
+optional — skipping it simply means the same one-time prompt appears on the first real
+`Share > MetaShield` use. The setup image is never imported. macOS may still show its
+fixed Copy/Edit Extensions rows in that picker.
 Notification permission remains optional and is requested only when the user enables
 GitHub update checks. Other Photos hand-off paths run under the host app and may receive
 their own one-time permission prompt when first used.
