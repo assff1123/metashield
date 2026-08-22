@@ -15,7 +15,15 @@ public enum PhotoPermissionSetup {
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAD0lEQVR4AQEEAPv/AP///wX+Av5JZm4rAAAAAElFTkSuQmCC"
   )!
 
-  public static func isSetupRequest(registeredTypeIdentifiers: [String]) -> Bool {
+  public static func hasSetupType(registeredTypeIdentifiers: [String]) -> Bool {
     registeredTypeIdentifiers.contains(typeIdentifier)
+  }
+
+  public static func isSetupRequest(
+    registeredTypeIdentifiers: [String],
+    markerData candidateMarkerData: Data?
+  ) -> Bool {
+    hasSetupType(registeredTypeIdentifiers: registeredTypeIdentifiers)
+      && candidateMarkerData == markerData
   }
 }

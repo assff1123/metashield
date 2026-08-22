@@ -53,13 +53,15 @@ ad-hoc 서명본은 업데이트 때 사진 권한을 다시 요청할 수 있�
   로그인 항목, Finder 강제 재시작이 없습니다.
 - 메인 앱이 첫 실행만으로 호스트 사진 권한을 요청하던 동작을 제거했습니다. 대신
   `사진 앱 권한 연결…` 버튼이 시스템 공유 선택기를 열고 공유 확장 자체에 설정용 1×1 정규 RGB
-  PNG와 전용 타입 마커를 전달합니다. 공유 확장은 마커를 확인하면 사진을 만들지 않고 add-only
-  권한만 요청합니다. 실제 설치본에서 MetaShield 선택·권한 연결 완료와 메인 앱 창 1개 유지,
+  PNG와 전용 타입 마커를 전달합니다. 공유 확장은 타입뿐 아니라 마커 바이트까지 일치할 때만
+  사진을 만들지 않고 add-only 권한을 요청하며, 설정 데이터·권한 콜백에는 60초 제한과 취소
+  경로가 있습니다. 실제 설치본에서 MetaShield 선택·권한 연결 완료와 메인 앱 창 1개 유지,
   설정 경로의 PhotoKit `performChanges` 미호출을 확인했습니다.
 - 0.3.7 이하가 만든 정확한 MetaShield workflow와 해당 `pbs` 항목만 최초 실행 때 정리합니다.
   다른 앱의 서비스 설정은 건드리지 않습니다.
 - 이미지 형식 편집기로 등록하던 `CFBundleDocumentTypes`를 제거해 Finder의
-  `다음으로 열기 > MetaShield` 중복 항목을 없앴습니다.
+  `다음으로 열기 > MetaShield` 중복 항목을 없앴습니다. 사용자가 명시적으로 앱 아이콘에
+  이미지를 드래그하거나 `open -a MetaShield <파일>`로 전달하는 창 없는 처리 경로는 유지합니다.
 - 사진 앱 임시 경로를 처리할 때 `PHPhotoLibrary.performChanges` 완료 콜백이 Photos의 private
   queue에서 MainActor 격리 클로저를 직접 실행해 `EXC_BREAKPOINT`로 종료되는 현상을 실제로
   재현했습니다. 호스트와 공유 확장 모두 system callback을 `nonisolated`에서 만들고 명시적으로
@@ -72,7 +74,9 @@ ad-hoc 서명본은 업데이트 때 사진 권한을 다시 요청할 수 있�
 앱을 휴지통으로 옮기면 실행 코드·Finder Service·공유 확장은 함께 없어집니다. 반면
 Gatekeeper 승인, TCC 권한, 최근 실행 기록과 UserDefaults는 macOS가 소유하는 상태라 즉시
 삭제된다고 보장할 수 없습니다. 이는 실행 가능한 잔여 프로그램이 아니며 별도 제거 도구를
-상주시켜 해결할 성격도 아닙니다.
+상주시켜 해결할 성격도 아닙니다. macOS가 보호하는 공유 확장 컨테이너
+`~/Library/Containers/kr.metashield.app.share`도 남을 수 있지만 처리 이미지를 영구 보관하지
+않으며, 보호를 우회해 삭제하도록 안내하지 않습니다.
 
 ## 0.3.7에서 추가한 서명 검증 다운로드
 
@@ -223,7 +227,7 @@ VoiceOver 실사용 통과를 주장하지 않습니다. 공개 전 VoiceOver, �
 ## 최종 직접 배포물
 
 - `outputs/MetaShield-0.3.8-direct.dmg`
-- SHA-256: `7919a6be36224ff1b465722dfe28ead8da4231346d0163bc57a79f3bb6b6a42d`
+- SHA-256: `325692a02967e31f3105a337bf8008a89802992e4362dafe01a1b8defd616ff1`
 
 0.3.1 배포물은 위 알파 결함 때문에 배포 대상에서 제외하고 `outputs/archive-pre-0.3.2/`로 옮겼습니다.
 

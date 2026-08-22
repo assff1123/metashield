@@ -727,12 +727,31 @@ private func testPhotoPermissionSetupMarker() throws {
   )
   try expect(
     PhotoPermissionSetup.isSetupRequest(
-      registeredTypeIdentifiers: ["public.png", PhotoPermissionSetup.typeIdentifier]),
+      registeredTypeIdentifiers: ["public.png", PhotoPermissionSetup.typeIdentifier],
+      markerData: PhotoPermissionSetup.markerData
+    ),
     "권한 설정 마커를 인식하지 못했습니다."
   )
   try expect(
-    !PhotoPermissionSetup.isSetupRequest(registeredTypeIdentifiers: ["public.png"]),
+    !PhotoPermissionSetup.isSetupRequest(
+      registeredTypeIdentifiers: ["public.png"],
+      markerData: PhotoPermissionSetup.markerData
+    ),
     "일반 PNG를 권한 설정 요청으로 잘못 인식했습니다."
+  )
+  try expect(
+    !PhotoPermissionSetup.isSetupRequest(
+      registeredTypeIdentifiers: ["public.png", PhotoPermissionSetup.typeIdentifier],
+      markerData: Data("wrong marker".utf8)
+    ),
+    "잘못된 권한 설정 마커를 인식했습니다."
+  )
+  try expect(
+    !PhotoPermissionSetup.isSetupRequest(
+      registeredTypeIdentifiers: ["public.png", PhotoPermissionSetup.typeIdentifier],
+      markerData: nil
+    ),
+    "데이터가 없는 권한 설정 마커를 인식했습니다."
   )
 }
 

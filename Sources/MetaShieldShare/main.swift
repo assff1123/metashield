@@ -11,6 +11,7 @@ private func metaShieldExtensionMain(
 ) -> Int32
 
 private let shareProviderLoadTimeout: DispatchTimeInterval = .seconds(60)
+private let photoPermissionSetupTimeout: DispatchTimeInterval = .seconds(60)
 private let shareMaximumProviderByteCount = 128 * 1_024 * 1_024
 private let shareMaximumItemCount = 20
 
@@ -85,6 +86,8 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
   nonisolated private let cancellationState = ShareCancellationState()
   private var providers: [NSItemProvider] = []
   private var isProcessing = false
+  private var activePhotoPermissionSetupToken: UUID?
+  private var setupMarkerLoadProgress: Progress?
   private var activePhotoImportToken: UUID?
   private var activePhotoImportDirectory: URL?
 
@@ -142,10 +145,10 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
     super.viewDidAppear()
     providers = imageProviders()
     if providers.count == 1,
-      PhotoPermissionSetup.isSetupRequest(
+      PhotoPermissionSetup.hasSetupType(
         registeredTypeIdentifiers: providers[0].registeredTypeIdentifiers)
     {
-      beginPhotoPermissionSetup()
+      validatePhotoPermissionSetupRequest(from: providers[0])
     } else if providers.isEmpty {
       showStatus("사진 앱에서 이미지 데이터를 받지 못했습니다.", color: .systemRed)
       cancelButton.title = "닫기"
@@ -160,40 +163,95 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
     }
   }
 
-  private func beginPhotoPermissionSetup() {
+  private func validatePhotoPermissionSetupRequest(from provider: NSItemProvider) {
     guard !isProcessing else { return }
     isProcessing = true
+    let token = UUID()
+    activePhotoPermissionSetupToken = token
     titleLabel.stringValue = "사진 앱 권한 연결"
     detailLabel.stringValue =
       "사진 앱 공유 기능에 필요한 사진 추가 권한만 확인합니다. 설정 이미지는 보관함에 추가하지 않습니다."
-    cancelButton.isEnabled = false
     spinner.startAnimation(nil)
+    showStatus("권한 설정 요청을 확인하는 중…")
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + photoPermissionSetupTimeout) { [weak self] in
+      guard let self, self.activePhotoPermissionSetupToken == token else { return }
+      self.setupMarkerLoadProgress?.cancel()
+      self.setupMarkerLoadProgress = nil
+      self.activePhotoPermissionSetupToken = nil
+      self.finishWithError(Self.photoLibraryError("권한 설정 요청이 60초 안에 응답하지 않았습니다."))
+    }
+
+    let registeredTypeIdentifiers = provider.registeredTypeIdentifiers
+    setupMarkerLoadProgress = provider.loadDataRepresentation(
+      forTypeIdentifier: PhotoPermissionSetup.typeIdentifier
+    ) { [weak self] data, _ in
+      Task { @MainActor in
+        guard let self, self.activePhotoPermissionSetupToken == token,
+          !self.cancellationState.isCancelled
+        else { return }
+        self.setupMarkerLoadProgress = nil
+        if PhotoPermissionSetup.isSetupRequest(
+          registeredTypeIdentifiers: registeredTypeIdentifiers,
+          markerData: data
+        ) {
+          self.beginPhotoPermissionSetup(token: token)
+        } else {
+          self.activePhotoPermissionSetupToken = nil
+          self.isProcessing = false
+          self.titleLabel.stringValue = "MetaShield로 완전 제거"
+          self.detailLabel.stringValue =
+            "선택한 이미지를 자동으로 정리해 사진 보관함에 새 사진으로 추가합니다."
+          self.processSelection()
+        }
+      }
+    }
+  }
+
+  private func beginPhotoPermissionSetup(token: UUID) {
+    guard activePhotoPermissionSetupToken == token, !cancellationState.isCancelled else { return }
+    let authorizationToken = UUID()
+    activePhotoPermissionSetupToken = authorizationToken
     showStatus("사진 추가 권한을 확인하는 중…")
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + photoPermissionSetupTimeout) { [weak self] in
+      guard let self, self.activePhotoPermissionSetupToken == authorizationToken else { return }
+      self.activePhotoPermissionSetupToken = nil
+      self.finishWithError(Self.photoLibraryError("사진 권한 요청이 60초 안에 응답하지 않았습니다."))
+    }
 
     switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
     case .authorized, .limited:
-      finishPhotoPermissionSetup()
+      finishPhotoPermissionSetup(token: authorizationToken)
     case .notDetermined:
       Self.requestPhotoAuthorization { [weak self] status in
-        guard let self else { return }
+        guard let self, self.activePhotoPermissionSetupToken == authorizationToken,
+          !self.cancellationState.isCancelled
+        else { return }
         if status == .authorized || status == .limited {
-          self.finishPhotoPermissionSetup()
+          self.finishPhotoPermissionSetup(token: authorizationToken)
         } else {
+          self.activePhotoPermissionSetupToken = nil
           self.finishWithError(
             Self.photoLibraryError(
               "사진 추가 권한이 필요합니다. 시스템 설정의 개인정보 보호 및 보안 > 사진에서 허용하세요."))
         }
       }
     case .denied, .restricted:
+      activePhotoPermissionSetupToken = nil
       finishWithError(
         Self.photoLibraryError(
           "사진 추가 권한이 꺼져 있습니다. 시스템 설정의 개인정보 보호 및 보안 > 사진에서 허용하세요."))
     @unknown default:
+      activePhotoPermissionSetupToken = nil
       finishWithError(Self.photoLibraryError("알 수 없는 사진 보관함 권한 상태입니다."))
     }
   }
 
-  private func finishPhotoPermissionSetup() {
+  private func finishPhotoPermissionSetup(token: UUID) {
+    guard activePhotoPermissionSetupToken == token, !cancellationState.isCancelled else { return }
+    activePhotoPermissionSetupToken = nil
+    cancelButton.isEnabled = false
     spinner.stopAnimation(nil)
     showStatus("연결 완료: 설정 이미지는 사진 보관함에 추가되지 않았습니다.", color: .systemGreen)
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
@@ -215,6 +273,9 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
 
   @objc private func cancel() {
     cancellationState.cancel()
+    activePhotoPermissionSetupToken = nil
+    setupMarkerLoadProgress?.cancel()
+    setupMarkerLoadProgress = nil
     activePhotoImportToken = nil
     if let directory = activePhotoImportDirectory {
       try? FileManager.default.removeItem(at: directory)
@@ -563,6 +624,9 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
   }
 
   private func finishWithError(_ error: Error) {
+    activePhotoPermissionSetupToken = nil
+    setupMarkerLoadProgress?.cancel()
+    setupMarkerLoadProgress = nil
     isProcessing = false
     spinner.stopAnimation(nil)
     showStatus("실패: \(error.localizedDescription)", color: .systemRed)
