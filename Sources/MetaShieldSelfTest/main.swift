@@ -277,8 +277,9 @@ private func testAlphaLowBitPayloadIsDestroyed() throws {
     (0..<8).map { UInt8((byte >> (7 - $0)) & 1) }
   }
 
-  for (name, low, high) in [("translucent", UInt8(8), UInt8(9)), ("opaque", UInt8(254), UInt8(255))]
-  {
+  for (name, low, high) in [
+    ("translucent", UInt8(8), UInt8(9)), ("opaque", UInt8(254), UInt8(255)),
+  ] {
     let sanitized = try [
       makeAlphaPayloadPNG(width: 64, height: 64) { _ in low },
       makeAlphaPayloadPNG(width: 64, height: 64) { _ in high },
@@ -301,9 +302,11 @@ private func testAlphaLowBitPayloadIsDestroyed() throws {
 /// The update check consumes exactly one string from the network. Anything that
 /// is not a plain major.minor.patch number must be rejected before use.
 private func testReleaseTagParsing() throws {
-  try expect(ReleaseVersion(tag: "v0.3.3") == ReleaseVersion(major: 0, minor: 3, patch: 3),
+  try expect(
+    ReleaseVersion(tag: "v0.3.3") == ReleaseVersion(major: 0, minor: 3, patch: 3),
     "정상 태그를 해석하지 못했습니다.")
-  try expect(ReleaseVersion(tag: "0.3.3") == ReleaseVersion(major: 0, minor: 3, patch: 3),
+  try expect(
+    ReleaseVersion(tag: "0.3.3") == ReleaseVersion(major: 0, minor: 3, patch: 3),
     "접두사 없는 태그를 해석하지 못했습니다.")
 
   let rejected = [
@@ -315,7 +318,9 @@ private func testReleaseTagParsing() throws {
     try expect(ReleaseVersion(tag: tag) == nil, "잘못된 태그를 통과시켰습니다: \(tag)")
   }
 
-  let ordered = ["0.3.3", "0.3.4", "0.10.0", "1.0.0", "1.0.1"].compactMap { ReleaseVersion(tag: $0) }
+  let ordered = ["0.3.3", "0.3.4", "0.10.0", "1.0.0", "1.0.1"].compactMap {
+    ReleaseVersion(tag: $0)
+  }
   try expect(ordered.count == 5, "비교용 태그를 해석하지 못했습니다.")
   for index in 1..<ordered.count {
     try expect(ordered[index - 1] < ordered[index], "버전 비교 순서가 잘못되었습니다.")

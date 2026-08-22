@@ -449,8 +449,13 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
       return
     }
     updateStatusLabel.stringValue = "새 버전을 확인하는 중…"
-    UpdateChecker.check { [weak self] outcome in
+    let didStart = UpdateChecker.checkIfDue { [weak self] outcome in
       self?.presentUpdateOutcome(outcome)
+    }
+    if !didStart {
+      updateStatusLabel.stringValue = "오늘 이미 새 버전을 확인했습니다."
+      updateStatusLabel.textColor = .tertiaryLabelColor
+      openReleaseButton.isHidden = true
     }
   }
 
@@ -466,6 +471,9 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
   }
 
   private func presentUpdateOutcome(_ outcome: UpdateChecker.Outcome) {
+    // Turning the option off cannot retract a request already sent, but a late
+    // callback must not restore update UI after the user disabled the feature.
+    guard updateToggle.state == .on, UpdateChecker.isEnabled else { return }
     switch outcome {
     case .updateAvailable(let latest):
       updateStatusLabel.stringValue = "새 버전 \(latest)이(가) 나왔습니다."
@@ -1172,6 +1180,86 @@ private final class DropZoneView: NSView {
   }
 }
 
+/// Receives the release response incrementally so the configured byte limit is
+/// an actual transfer limit rather than a check performed after URLSession has
+/// buffered the whole body. Redirects are rejected: the opt-in request is only
+/// allowed to reach the exact HTTPS endpoint compiled into the app.
+private final class BoundedUpdateSessionDelegate: NSObject, URLSessionDataDelegate,
+  @unchecked Sendable
+{
+  typealias Completion = @Sendable (Data?, HTTPURLResponse?) -> Void
+
+  private let expectedURL: URL
+  private let maximumByteCount: Int
+  private let completion: Completion
+  private var receivedData = Data()
+  private var acceptedResponse: HTTPURLResponse?
+  private var failed = false
+
+  init(expectedURL: URL, maximumByteCount: Int, completion: @escaping Completion) {
+    self.expectedURL = expectedURL
+    self.maximumByteCount = maximumByteCount
+    self.completion = completion
+  }
+
+  func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    willPerformHTTPRedirection response: HTTPURLResponse,
+    newRequest request: URLRequest,
+    completionHandler: @escaping (URLRequest?) -> Void
+  ) {
+    failed = true
+    completionHandler(nil)
+  }
+
+  func urlSession(
+    _ session: URLSession,
+    dataTask: URLSessionDataTask,
+    didReceive response: URLResponse,
+    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+  ) {
+    guard let response = response as? HTTPURLResponse,
+      response.statusCode == 200,
+      response.url == expectedURL,
+      response.expectedContentLength <= Int64(maximumByteCount)
+        || response.expectedContentLength == NSURLSessionTransferSizeUnknown
+    else {
+      failed = true
+      completionHandler(.cancel)
+      return
+    }
+
+    acceptedResponse = response
+    if response.expectedContentLength > 0 {
+      receivedData.reserveCapacity(Int(response.expectedContentLength))
+    }
+    completionHandler(.allow)
+  }
+
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+    guard !failed,
+      data.count <= maximumByteCount - receivedData.count
+    else {
+      failed = true
+      dataTask.cancel()
+      return
+    }
+    receivedData.append(data)
+  }
+
+  func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    didCompleteWithError error: Error?
+  ) {
+    let data = !failed && error == nil ? receivedData : nil
+    let response = !failed && error == nil ? acceptedResponse : nil
+    session.finishTasksAndInvalidate()
+    completion(data, response)
+  }
+}
+
 /// Opt-in release check.
 ///
 /// Design constraints, in order of importance:
@@ -1185,15 +1273,16 @@ private final class DropZoneView: NSView {
 ///   never runs for headless Finder, Services, or Photos requests.
 @MainActor
 private enum UpdateChecker {
-  enum Outcome {
+  enum Outcome: Sendable {
     case upToDate(current: ReleaseVersion)
     case updateAvailable(latest: ReleaseVersion)
     case failed
   }
 
-  static let releasePageURL = URL(string: "https://github.com/assff1123/metashield/releases/latest")!
+  static let releasePageURL = URL(
+    string: "https://github.com/assff1123/metashield/releases/latest")!
 
-  private static let feedURL = URL(
+  nonisolated private static let feedURL = URL(
     string: "https://api.github.com/repos/assff1123/metashield/releases/latest")!
   private static let enabledKey = "kr.metashield.app.updateCheckEnabled"
   private static let lastCheckKey = "kr.metashield.app.lastUpdateCheck"
@@ -1213,17 +1302,21 @@ private enum UpdateChecker {
   }
 
   /// Runs a check only if the user enabled it and a day has passed.
-  static func checkIfDue(completion: @escaping @MainActor (Outcome) -> Void) {
-    guard isEnabled else { return }
+  @discardableResult
+  static func checkIfDue(completion: @escaping @MainActor @Sendable (Outcome) -> Void) -> Bool {
+    guard isEnabled else { return false }
     let now = Date()
     let last = UserDefaults.standard.object(forKey: lastCheckKey) as? Date
     if let last, now.timeIntervalSince(last) < checkInterval, now >= last {
-      return
+      return false
     }
-    check(completion: completion)
+    performCheck(completion: completion)
+    return true
   }
 
-  static func check(completion: @escaping @MainActor (Outcome) -> Void) {
+  private static func performCheck(
+    completion: @escaping @MainActor @Sendable (Outcome) -> Void
+  ) {
     guard let current = currentVersion else {
       completion(.failed)
       return
@@ -1241,21 +1334,24 @@ private enum UpdateChecker {
       "Accept": "application/vnd.github+json",
       "User-Agent": "MetaShield/\(current) (update check)",
     ]
-    let session = URLSession(configuration: configuration)
-
     var request = URLRequest(url: feedURL)
     request.httpMethod = "GET"
-    session.dataTask(with: request) { data, response, _ in
+    let delegate = BoundedUpdateSessionDelegate(
+      expectedURL: feedURL,
+      maximumByteCount: maximumResponseByteCount
+    ) { data, response in
       let latest = parseLatestVersion(data: data, response: response)
       Task { @MainActor in
-        session.finishTasksAndInvalidate()
         guard let latest else {
           completion(.failed)
           return
         }
-        completion(latest > current ? .updateAvailable(latest: latest) : .upToDate(current: current))
+        completion(
+          latest > current ? .updateAvailable(latest: latest) : .upToDate(current: current))
       }
-    }.resume()
+    }
+    let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+    session.dataTask(with: request).resume()
   }
 
   nonisolated private static func parseLatestVersion(data: Data?, response: URLResponse?)
@@ -1263,6 +1359,7 @@ private enum UpdateChecker {
   {
     guard let httpResponse = response as? HTTPURLResponse,
       httpResponse.statusCode == 200,
+      httpResponse.url == feedURL,
       let data,
       data.count <= maximumResponseByteCount,
       let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

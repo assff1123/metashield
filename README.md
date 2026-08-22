@@ -4,8 +4,9 @@ MetaShield is an aggressive macOS image metadata scrubber designed for NovelAI P
 The visible operation is intentionally simple: select or drop an image, sanitize it,
 verify the result, and only then replace the original PNG.
 
-MetaShield performs all decoding and encoding locally. The app has no analytics,
-account system, advertising SDK, updater, or network client.
+MetaShield performs all image decoding and encoding locally. The app has no analytics,
+account system, advertising SDK, or updater. Its only network feature is an optional,
+off-by-default GitHub release check; image data and metadata are never transmitted.
 
 ## How this was built
 
@@ -52,6 +53,7 @@ The optional check, off until the user enables it in the app window:
 - runs only on an interactive launch, at most once every 24 hours;
 - requests one compiled-in URL and reads exactly one field, `tag_name`, which is
   discarded unless it is a plain `major.minor.patch` number;
+- rejects redirects and stops receiving the response as soon as it exceeds 512 KiB;
 - never takes a URL from the response — the release page it opens is compiled in;
 - shows a line of text and a button that opens that page in the default browser.
 
@@ -106,7 +108,7 @@ the ad-hoc-signed development ZIP under `outputs/developer`. Keeping a second in
 menus. Install the ZIP's app in `/Applications` and launch it once so macOS registers
 its Services entry.
 
-`outputs/developer/MetaShield-0.3.2-local.zip` is a development artifact. For free direct distribution,
+`outputs/developer/MetaShield-0.3.5-local.zip` is a development artifact. For free direct distribution,
 build the user-facing DMG and its checksum with `./scripts/package-direct-dmg.sh`.
 
 For command-line verification:
@@ -144,7 +146,7 @@ Apple Developer Program membership, but macOS will require the user to choose
 
 ```sh
 ./scripts/package-direct-dmg.sh
-./scripts/verify-direct-dmg.sh outputs/MetaShield-0.3.2-direct.dmg
+./scripts/verify-direct-dmg.sh outputs/MetaShield-0.3.5-direct.dmg
 ```
 
 Distribute the resulting `.dmg` and matching `.sha256` over HTTPS. The DMG includes
@@ -163,7 +165,7 @@ METASHIELD_NOTARY_PROFILE="metashield-notary" \
 Then verify the exact notarized artifact before upload:
 
 ```sh
-./scripts/verify-release.sh outputs/MetaShield-0.3.2.dmg
+./scripts/verify-release.sh outputs/MetaShield-0.3.5.dmg
 ```
 
 See `DISTRIBUTION.md` for the complete clean-install, upgrade, rollback, and uninstall

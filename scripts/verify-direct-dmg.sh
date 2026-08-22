@@ -37,8 +37,13 @@ fi
 mounted=true
 
 APP_PATH="$MOUNT_DIR/MetaShield.app"
-if [[ ! -d "$APP_PATH" || ! -f "$MOUNT_DIR/처음 설치 방법.txt" ]]; then
-    echo "DMG에 앱 또는 설치 안내가 없습니다." >&2
+if [[ ! -d "$APP_PATH" || ! -f "$MOUNT_DIR/처음 설치 방법.txt" || \
+      ! -f "$MOUNT_DIR/LICENSE.txt" ]]; then
+    echo "DMG에 앱, 설치 안내 또는 라이선스 사본이 없습니다." >&2
+    exit 1
+fi
+if ! /usr/bin/cmp -s "$PROJECT_DIR/LICENSE" "$MOUNT_DIR/LICENSE.txt"; then
+    echo "DMG의 LICENSE.txt가 저장소 라이선스와 일치하지 않습니다." >&2
     exit 1
 fi
 
