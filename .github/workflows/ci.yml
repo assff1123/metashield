@@ -9,7 +9,7 @@ jobs:
   self-test:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build (warnings as errors)
         run: swift build -c release -Xswiftc -warnings-as-errors
       - name: Run self-test suite
