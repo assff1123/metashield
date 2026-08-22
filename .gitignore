@@ -11,7 +11,7 @@ jiho/
 # Distribution binaries are attached to GitHub Releases, not committed
 outputs/*.dmg
 outputs/*.zip
-outputs/archive-pre-*/
+outputs/archive/
 outputs/developer/
 
 # macOS

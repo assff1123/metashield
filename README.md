@@ -57,7 +57,11 @@ The optional check, off until the user enables it in the app window:
 - never takes a URL from the response — the release page it opens is compiled in;
 - shows a line of text and a button that opens that page in the default browser.
 
-Headless Finder, Services, and Photos requests never reach this path.
+When the check is enabled and macOS notification permission has already been granted,
+a headless Finder, Services, or Photos run may also check once a day after it finishes
+its work, and post a notification banner. That path never raises a permission prompt and
+never delays process exit by more than eight seconds. With the check disabled, no path
+touches the network. MetaShield installs no background agent.
 
 ## Input behavior
 
@@ -146,7 +150,7 @@ Apple Developer Program membership, but macOS will require the user to choose
 
 ```sh
 ./scripts/package-direct-dmg.sh
-./scripts/verify-direct-dmg.sh outputs/MetaShield-0.3.5-direct.dmg
+./scripts/verify-direct-dmg.sh outputs/MetaShield-0.3.6-direct.dmg
 ```
 
 Distribute the resulting `.dmg` and matching `.sha256` over HTTPS. The DMG includes

@@ -2,6 +2,7 @@ import AppKit
 import MetaShieldCore
 import Photos
 import UniformTypeIdentifiers
+import UserNotifications
 
 @main
 @MainActor
@@ -18,7 +19,9 @@ private enum MetaShieldApplication {
 }
 
 @MainActor
-private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
+private final class ApplicationDelegate: NSObject, NSApplicationDelegate,
+  UNUserNotificationCenterDelegate
+{
   private enum ExternalRequest {
     case files([URL])
     case imageData(Data, suggestedName: String)
@@ -54,6 +57,8 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     serviceProvider = ImageServiceProvider(applicationDelegate: self)
     NSApp.servicesProvider = serviceProvider
     NSUpdateDynamicServices()
+
+    UpdateChecker.becomeNotificationDelegate(self)
 
     DispatchQueue.main.async { [weak self] in
       self?.deliverNextExternalRequestIfNeeded()
@@ -154,7 +159,43 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
 
   private func finishSilentRequest() {
     guard !interactiveWindowShown else { return }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+    // A headless run may post a "new version" banner, but it never prompts for
+    // notification permission and never stays alive waiting for the network.
+    UpdateChecker.notifyIfUpdateAvailableInBackground {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+        NSApp.terminate(nil)
+      }
+    }
+  }
+
+  nonisolated func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    completionHandler([.banner, .list])
+  }
+
+  nonisolated func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    let category = response.notification.request.content.categoryIdentifier
+    completionHandler()
+    Task { @MainActor in
+      self.handleNotificationActivation(category: category)
+    }
+  }
+
+  private func handleNotificationActivation(category: String) {
+    guard category == UpdateChecker.updateNotificationCategory else { return }
+    // Opens the compiled-in release page. The notification carries no URL.
+    NSWorkspace.shared.open(UpdateChecker.releasePageURL)
+
+    // Clicking the banner can relaunch a process that has no work and no window.
+    guard !interactiveWindowShown, !hasExternalOpenRequest, externalRequests.isEmpty else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
       NSApp.terminate(nil)
     }
   }
@@ -448,14 +489,12 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
       openReleaseButton.isHidden = true
       return
     }
+    // Only the interactive window may ask for notification permission.
+    UpdateChecker.requestNotificationAuthorization()
     updateStatusLabel.stringValue = "새 버전을 확인하는 중…"
-    let didStart = UpdateChecker.checkIfDue { [weak self] outcome in
+    // A check the user asked for is not rate limited. Only automatic ones are.
+    UpdateChecker.checkNow { [weak self] outcome in
       self?.presentUpdateOutcome(outcome)
-    }
-    if !didStart {
-      updateStatusLabel.stringValue = "오늘 이미 새 버전을 확인했습니다."
-      updateStatusLabel.textColor = .tertiaryLabelColor
-      openReleaseButton.isHidden = true
     }
   }
 
@@ -1260,6 +1299,23 @@ private final class BoundedUpdateSessionDelegate: NSObject, URLSessionDataDelega
   }
 }
 
+/// Runs a completion exactly once, whichever of the network result or the
+/// background deadline arrives first.
+@MainActor
+private final class CompletionGate {
+  private var completion: (@MainActor () -> Void)?
+
+  init(_ completion: @escaping @MainActor () -> Void) {
+    self.completion = completion
+  }
+
+  func fire() {
+    guard let completion else { return }
+    self.completion = nil
+    completion()
+  }
+}
+
 /// Opt-in release check.
 ///
 /// Design constraints, in order of importance:
@@ -1287,6 +1343,7 @@ private enum UpdateChecker {
   private static let enabledKey = "kr.metashield.app.updateCheckEnabled"
   private static let lastCheckKey = "kr.metashield.app.lastUpdateCheck"
   private static let checkInterval: TimeInterval = 24 * 60 * 60
+  private static let backgroundDeadline: TimeInterval = 8
   nonisolated private static let maximumResponseByteCount = 512 * 1_024
 
   static var isEnabled: Bool {
@@ -1299,6 +1356,75 @@ private enum UpdateChecker {
       let string = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
     else { return nil }
     return ReleaseVersion(tag: string)
+  }
+
+  static let updateNotificationCategory = "kr.metashield.app.update"
+
+  /// Notification APIs require a real bundle. A plain `swift run` binary has none.
+  private static var canUseNotifications: Bool {
+    Bundle.main.bundleIdentifier != nil
+  }
+
+  static func becomeNotificationDelegate(_ delegate: UNUserNotificationCenterDelegate) {
+    guard canUseNotifications else { return }
+    UNUserNotificationCenter.current().delegate = delegate
+  }
+
+  static func requestNotificationAuthorization() {
+    guard canUseNotifications else { return }
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
+  }
+
+  /// Used by headless Finder, Services, and Photos runs. It posts a banner only
+  /// when the user already enabled the check and already granted notifications:
+  /// a background run must never raise a permission prompt. The completion always
+  /// runs, at the latest after `backgroundDeadline`, so the process still exits
+  /// promptly when the network hangs.
+  static func notifyIfUpdateAvailableInBackground(completion: @escaping @MainActor () -> Void) {
+    guard isEnabled, canUseNotifications else {
+      completion()
+      return
+    }
+    let gate = CompletionGate(completion)
+    UNUserNotificationCenter.current().getNotificationSettings { settings in
+      let isAuthorized = settings.authorizationStatus == .authorized
+      Task { @MainActor in
+        guard isAuthorized else {
+          gate.fire()
+          return
+        }
+        let didStart = checkIfDue { outcome in
+          if case .updateAvailable(let latest) = outcome {
+            postUpdateNotification(latest: latest)
+          }
+          gate.fire()
+        }
+        if !didStart { gate.fire() }
+      }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + backgroundDeadline) {
+      gate.fire()
+    }
+  }
+
+  private static func postUpdateNotification(latest: ReleaseVersion) {
+    let content = UNMutableNotificationContent()
+    content.title = "MetaShield 새 버전 \(latest)"
+    content.body = "눌러서 릴리스 페이지를 엽니다. 앱이 직접 내려받거나 설치하지 않습니다."
+    content.categoryIdentifier = updateNotificationCategory
+    // One pending banner per version, so repeated runs cannot stack notifications.
+    let request = UNNotificationRequest(
+      identifier: "\(updateNotificationCategory).\(latest)",
+      content: content,
+      trigger: nil
+    )
+    UNUserNotificationCenter.current().add(request)
+  }
+
+  /// A check the user explicitly asked for. Not rate limited, still opt-in.
+  static func checkNow(completion: @escaping @MainActor @Sendable (Outcome) -> Void) {
+    guard isEnabled else { return }
+    performCheck(completion: completion)
   }
 
   /// Runs a check only if the user enabled it and a day has passed.
