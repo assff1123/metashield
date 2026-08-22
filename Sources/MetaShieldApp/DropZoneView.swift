@@ -108,7 +108,9 @@ final class DropZoneView: NSView {
 
   override func mouseUp(with event: NSEvent) {
     let location = convert(event.locationInWindow, from: nil)
-    if isEnabled, bounds.contains(location) {
+    // Only the first click activates: a double-click's second mouseUp would
+    // queue behind the modal open panel and reopen it as soon as it closes.
+    if isEnabled, event.clickCount == 1, bounds.contains(location) {
       onActivate?()
     } else {
       super.mouseUp(with: event)

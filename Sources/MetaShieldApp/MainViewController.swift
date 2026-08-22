@@ -813,14 +813,15 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     temporaryInputDirectories.removeAll()
 
     if wasSilent {
+      // The notification body can surface on the lock screen, in Notification
+      // Center history, and in screen shares. Carry only the failure reason —
+      // file names stay in the in-window status, where the user is present.
       let previous = pendingSilentResult
       pendingSilentResult = SilentRunResult(
         successCount: (previous?.successCount ?? 0) + successes.count,
         failureCount: (previous?.failureCount ?? 0) + failures.count,
         firstFailureDescription: previous?.firstFailureDescription
-          ?? failures.first.map {
-            "\($0.url.lastPathComponent): \($0.error.localizedDescription)"
-          }
+          ?? failures.first.map(\.error.localizedDescription)
       )
     }
     completion?(failures.isEmpty)
