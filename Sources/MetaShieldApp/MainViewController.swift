@@ -23,6 +23,8 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
   private let spinner = NSProgressIndicator()
   private let updateToggle = NSButton(
     checkboxWithTitle: "새 버전 확인 (GitHub)", target: nil, action: nil)
+  private let notifyToggle = NSButton(
+    checkboxWithTitle: "백그라운드 처리 완료 알림", target: nil, action: nil)
   private let updateStatusLabel = NSTextField(labelWithString: "")
   private let downloadUpdateButton = NSButton(
     title: "검증된 DMG 받기…", target: nil, action: nil)
@@ -65,7 +67,8 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     photoPermissionButton.bezelStyle = .rounded
     photoPermissionButton.controlSize = .large
     photoPermissionButton.setAccessibilityHelp(
-      "선택 사항: 사진 앱 공유 확장의 사진 추가 권한을 미리 허용해 둡니다. 연결하지 않아도 사진 앱에서 처음 공유할 때 같은 권한 창이 나타납니다. 시스템 공유 창에서 MetaShield를 선택하세요.")
+      "선택 사항: 사진 앱 공유 확장의 사진 추가 권한을 미리 허용해 둡니다. 연결하지 않아도 "
+        + "사진 앱에서 처음 공유할 때 같은 권한 창이 나타납니다. 시스템 공유 창에서 MetaShield를 선택하세요.")
 
     spinner.style = .spinning
     spinner.controlSize = .small
@@ -77,8 +80,15 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     updateToggle.setAccessibilityHelp(
       "켜면 하루에 한 번 GitHub 릴리스에서 새 버전 번호만 확인합니다. 앱이 직접 내려받거나 설치하지 않습니다.")
 
-    updateStatusLabel.font = .systemFont(ofSize: 11)
-    updateStatusLabel.textColor = .tertiaryLabelColor
+    notifyToggle.target = self
+    notifyToggle.action = #selector(toggleBackgroundNotifications)
+    notifyToggle.state = BackgroundResultNotifier.isEnabled ? .on : .off
+    notifyToggle.setAccessibilityHelp(
+      "켜면 Finder 우클릭·Dock 드래그처럼 창 없이 처리한 결과를 macOS 알림으로 알려줍니다. "
+        + "알림 권한이 필요합니다.")
+
+    updateStatusLabel.font = .preferredFont(forTextStyle: .callout)
+    updateStatusLabel.textColor = .secondaryLabelColor
     updateStatusLabel.alignment = .center
     updateStatusLabel.setAccessibilityLabel("업데이트 확인 상태")
 
@@ -104,6 +114,9 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     dropZone.onFilePromises = { [weak self] promises in
       self?.receiveFilePromises(promises)
     }
+    dropZone.onActivate = { [weak self] in
+      self?.chooseImages()
+    }
 
     let statusRow = NSStackView(views: [spinner, statusLabel])
     statusRow.orientation = .horizontal
@@ -121,7 +134,8 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     actionRow.alignment = .centerY
 
     let stack = NSStackView(views: [
-      titleLabel, subtitleLabel, dropZone, statusRow, actionRow, updateRow, updateStatusLabel,
+      titleLabel, subtitleLabel, dropZone, statusRow, actionRow, notifyToggle, updateRow,
+      updateStatusLabel,
     ])
     stack.orientation = .vertical
     stack.alignment = .centerX
@@ -141,6 +155,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
       statusRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
       statusLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor, constant: -28),
       actionRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
+      notifyToggle.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
       updateRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
       updateStatusLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
     ])
@@ -240,6 +255,16 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     photoPermissionProvider = nil
   }
 
+  @objc private func toggleBackgroundNotifications() {
+    let isEnabled = notifyToggle.state == .on
+    BackgroundResultNotifier.isEnabled = isEnabled
+    // Only this interactive toggle may raise the notification permission
+    // prompt. Headless runs check the granted state and never prompt.
+    if isEnabled {
+      UpdateChecker.requestNotificationAuthorization()
+    }
+  }
+
   @objc private func toggleUpdateCheck() {
     let isEnabled = updateToggle.state == .on
     UpdateChecker.isEnabled = isEnabled
@@ -268,7 +293,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     downloadUpdateButton.isEnabled = false
     UpdateChecker.downloadVerifiedUpdate(version: version) { [weak self] message in
       self?.updateStatusLabel.stringValue = message
-      self?.updateStatusLabel.textColor = .tertiaryLabelColor
+      self?.updateStatusLabel.textColor = .secondaryLabelColor
     } completion: { [weak self] result in
       guard let self else { return }
       self.downloadUpdateButton.isEnabled = true
@@ -284,6 +309,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
         self.updateStatusLabel.textColor = .systemRed
       }
       NSAccessibility.post(element: self.updateStatusLabel, notification: .valueChanged)
+      self.announce(self.updateStatusLabel.stringValue)
     }
   }
 
@@ -322,17 +348,18 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
       openReleaseButton.isHidden = false
     case .upToDate(let current):
       updateStatusLabel.stringValue = "최신 버전입니다 (\(current))."
-      updateStatusLabel.textColor = .tertiaryLabelColor
+      updateStatusLabel.textColor = .secondaryLabelColor
       pendingUpdate = nil
       downloadUpdateButton.isHidden = true
       openReleaseButton.isHidden = true
     case .failed:
       updateStatusLabel.stringValue = "새 버전을 확인하지 못했습니다."
-      updateStatusLabel.textColor = .tertiaryLabelColor
+      updateStatusLabel.textColor = .secondaryLabelColor
       downloadUpdateButton.isHidden = true
       openReleaseButton.isHidden = true
     }
     NSAccessibility.post(element: updateStatusLabel, notification: .valueChanged)
+    announce(updateStatusLabel.stringValue)
   }
 
   func receiveFileURLs(
@@ -754,7 +781,11 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     chooseButton.isEnabled = false
     photoPermissionButton.isEnabled = false
     dropZone.isEnabled = false
-    spinner.startAnimation(nil)
+    // The status text already says work is in progress; the spinner is purely
+    // animated decoration, so Reduce Motion simply leaves it hidden.
+    if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+      spinner.startAnimation(nil)
+    }
     showStatus("디코딩·정리·재검증 중…", isError: false)
   }
 
@@ -780,7 +811,34 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
       try? FileManager.default.removeItem(at: directory)
     }
     temporaryInputDirectories.removeAll()
+
+    if wasSilent {
+      let previous = pendingSilentResult
+      pendingSilentResult = SilentRunResult(
+        successCount: (previous?.successCount ?? 0) + successes.count,
+        failureCount: (previous?.failureCount ?? 0) + failures.count,
+        firstFailureDescription: previous?.firstFailureDescription
+          ?? failures.first.map {
+            "\($0.url.lastPathComponent): \($0.error.localizedDescription)"
+          }
+      )
+    }
     completion?(failures.isEmpty)
+  }
+
+  struct SilentRunResult {
+    let successCount: Int
+    let failureCount: Int
+    let firstFailureDescription: String?
+  }
+
+  private var pendingSilentResult: SilentRunResult?
+
+  /// Read once by the delegate when a headless batch finishes, so the optional
+  /// background notification can summarize every request in the batch.
+  func consumePendingSilentResult() -> SilentRunResult? {
+    defer { pendingSilentResult = nil }
+    return pendingSilentResult
   }
 
   private func resetProcessingControls() {
@@ -795,6 +853,21 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     statusLabel.stringValue = text
     statusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
     NSAccessibility.post(element: statusLabel, notification: .valueChanged)
+    announce(text)
+  }
+
+  /// `.valueChanged` is only spoken when the VoiceOver cursor already sits on
+  /// the label. An announcement is spoken wherever the cursor is, which is what
+  /// a user waiting on a drop actually needs to hear.
+  private func announce(_ text: String) {
+    NSAccessibility.post(
+      element: view.window ?? NSApp as Any,
+      notification: .announcementRequested,
+      userInfo: [
+        .announcement: text,
+        .priority: NSAccessibilityPriorityLevel.high.rawValue,
+      ]
+    )
   }
 
   private func reportImmediateFailure(_ message: String, silently: Bool) {

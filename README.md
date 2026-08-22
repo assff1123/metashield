@@ -105,9 +105,12 @@ touches the network. MetaShield installs no background agent.
   128 MiB and 8 million decoded pixels and accepts at most 20 images. Provider loads
   and Photos authorization/import callbacks also time out after 60 seconds.
 - A headless hand-off never opens the MetaShield main window, including on failure.
-  Finder Quick Action failures are reported by a notification; Photos share failures
-  stay visible in the macOS share panel. A headless Photos `Edit With` failure simply
-  adds no new image, so Photos permission should be checked if no result appears.
+  Headless results are silent by default; when the user enables the main window's
+  `백그라운드 처리 완료 알림` option and macOS notification permission is granted, a
+  finished headless run posts one summary notification (success count, or the first
+  failure). Photos share failures stay visible in the macOS share panel. A headless
+  Photos `Edit With` failure simply adds no new image, so Photos permission should be
+  checked if no result appears.
 
 ## Build
 
@@ -143,8 +146,9 @@ The Finder command is a bundle-contained AppKit Service. MetaShield does not cop
 workflow, helper, or background agent outside the app bundle. PNG inputs are verified
 and replaced in place; other still-image formats produce a uniquely named `.clean.png`
 beside the source. Releases from 0.3.8 onward remove the legacy 0.3.7-and-earlier
-workflow the first time they launch. The app also declares itself an alternate viewer
-for images, so dragging files onto the MetaShield Dock icon or choosing Finder's
+workflow the first time they launch. The app also declares itself an alternate image
+handler (`Editor` role, because it modifies files in place, with `Alternate` rank), so
+dragging files onto the MetaShield Dock icon or choosing Finder's
 `Open With > MetaShield` runs the same headless sanitization as the Service; MetaShield
 never becomes the default handler for any image type. Finder-side processing needs no
 TCC permission at all. The main window's `사진 권한 미리 연결… (선택)` button opens

@@ -27,7 +27,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate,
 
     let controller = MainViewController()
     let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 620, height: 500),
+      contentRect: NSRect(x: 0, y: 0, width: 620, height: 520),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
       backing: .buffered,
       defer: false
@@ -36,7 +36,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate,
     self.controller = controller
     self.window = window
     window.title = "MetaShield"
-    window.minSize = NSSize(width: 540, height: 440)
+    window.minSize = NSSize(width: 540, height: 470)
     window.center()
 
     serviceProvider = ImageServiceProvider(applicationDelegate: self)
@@ -144,11 +144,20 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate,
 
   private func finishSilentRequest() {
     guard !interactiveWindowShown else { return }
-    // A headless run may post a "new version" banner, but it never prompts for
-    // notification permission and never stays alive waiting for the network.
-    UpdateChecker.notifyIfUpdateAvailableInBackground {
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-        NSApp.terminate(nil)
+    // A headless run may post a result summary and a "new version" banner, but
+    // it never prompts for notification permission and never stays alive
+    // waiting for the network. The exit chains after both posts so the local
+    // notification request reaches the system before the process terminates.
+    let result = controller?.consumePendingSilentResult()
+    BackgroundResultNotifier.postIfNeeded(
+      successCount: result?.successCount ?? 0,
+      failureCount: result?.failureCount ?? 0,
+      firstFailureDescription: result?.firstFailureDescription
+    ) {
+      UpdateChecker.notifyIfUpdateAvailableInBackground {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+          NSApp.terminate(nil)
+        }
       }
     }
   }
@@ -174,11 +183,17 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate,
   }
 
   private func handleNotificationActivation(category: String) {
-    guard category == UpdateChecker.updateNotificationCategory else { return }
-    // Bring up the window instead of the browser: the verified download lives
-    // there, and a browser download would skip signature and checksum checks.
-    showInteractiveWindow()
-    controller?.checkForUpdatesNow()
+    switch category {
+    case UpdateChecker.updateNotificationCategory:
+      // Bring up the window instead of the browser: the verified download lives
+      // there, and a browser download would skip signature and checksum checks.
+      showInteractiveWindow()
+      controller?.checkForUpdatesNow()
+    case BackgroundResultNotifier.resultNotificationCategory:
+      showInteractiveWindow()
+    default:
+      break
+    }
   }
 }
 

@@ -5,12 +5,20 @@ on:
     branches: [main]
   pull_request:
 
+# Releases are deliberately NOT automated here. The Ed25519 manifest key and the
+# signing flow (scripts/sign-update-manifest.swift) live offline; moving them
+# into CI secrets would defeat the offline-key design documented in AUDIT.md.
+
 jobs:
   self-test:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
-      - name: Build (warnings as errors)
+      - name: Format lint (strict)
+        run: swift format lint --strict --recursive Sources Package.swift
+      - name: Build debug (warnings as errors)
+        run: swift build -Xswiftc -warnings-as-errors
+      - name: Build release (warnings as errors)
         run: swift build -c release -Xswiftc -warnings-as-errors
       - name: Run self-test suite
         run: swift run -c release metashield-self-test

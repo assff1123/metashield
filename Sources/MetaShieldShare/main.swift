@@ -171,7 +171,7 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
     titleLabel.stringValue = "사진 앱 권한 연결"
     detailLabel.stringValue =
       "사진 앱 공유 기능에 필요한 사진 추가 권한만 확인합니다. 설정 이미지는 보관함에 추가하지 않습니다."
-    spinner.startAnimation(nil)
+    startSpinner()
     showStatus("권한 설정 요청을 확인하는 중…")
 
     DispatchQueue.main.asyncAfter(deadline: .now() + photoPermissionSetupTimeout) { [weak self] in
@@ -262,7 +262,7 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
   @objc private func processSelection() {
     guard !isProcessing, !providers.isEmpty else { return }
     isProcessing = true
-    spinner.startAnimation(nil)
+    startSpinner()
     showStatus("원본 데이터를 받아 정리·검증하는 중…")
 
     let targetProviders = ItemProviderCollection(providers)
@@ -627,6 +627,24 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
     statusLabel.stringValue = text
     statusLabel.textColor = color
     NSAccessibility.post(element: statusLabel, notification: .valueChanged)
+    // `.valueChanged` is only spoken when the VoiceOver cursor already sits on
+    // the label; an announcement reaches the user wherever the cursor is.
+    NSAccessibility.post(
+      element: view.window ?? NSApp as Any,
+      notification: .announcementRequested,
+      userInfo: [
+        .announcement: text,
+        .priority: NSAccessibilityPriorityLevel.high.rawValue,
+      ]
+    )
+  }
+
+  /// The status text already reports progress; the spinner is animated
+  /// decoration, so Reduce Motion leaves it hidden.
+  private func startSpinner() {
+    if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+      spinner.startAnimation(nil)
+    }
   }
 }
 
