@@ -33,6 +33,8 @@ fi
 /usr/bin/ditto "$APP_BUNDLE" "$STAGING_DIR/MetaShield.app"
 /bin/ln -s /Applications "$STAGING_DIR/Applications"
 /bin/cp "$PROJECT_DIR/packaging/직접 배포 설치 안내.txt" "$STAGING_DIR/처음 설치 방법.txt"
+# Apache-2.0 requires that recipients of the work get a copy of the license.
+/bin/cp "$PROJECT_DIR/LICENSE" "$STAGING_DIR/LICENSE.txt"
 
 /usr/bin/hdiutil create \
     -volname "MetaShield $VERSION" \

@@ -13,3 +13,5 @@ MetaShield 처음 설치 방법
 
 터미널에서 quarantine 속성을 강제로 삭제할 필요는 없습니다.
 배포 페이지에 함께 제공된 SHA-256 체크섬과 DMG의 체크섬을 비교할 수 있습니다.
+
+이 소프트웨어는 Apache License 2.0 으로 배포됩니다. 같은 폴더의 LICENSE.txt 를 참고하세요.

@@ -7,6 +7,15 @@ verify the result, and only then replace the original PNG.
 MetaShield performs all decoding and encoding locally. The app has no analytics,
 account system, advertising SDK, updater, or network client.
 
+## How this was built
+
+MetaShield was developed with AI coding assistance. The sanitizing core, the file
+replacement path, and the update check were reviewed by a human against the threat
+model in `AUDIT.md`, and every claim in the guarantee boundary below is backed by an
+automated self test (`swift run -c release metashield-self-test`, 16/16). No
+third-party code is vendored: the app links only Apple system frameworks and the
+system zlib.
+
 ## Guarantee boundary
 
 For a successfully processed PNG, MetaShield guarantees that the output:
@@ -160,3 +169,12 @@ Then verify the exact notarized artifact before upload:
 See `DISTRIBUTION.md` for the complete clean-install, upgrade, rollback, and uninstall
 checklist, `INSTALL.md` for user-facing installation instructions, `AUDIT.md` for
 the release audit, and `PRIVACY.md` for the privacy disclosure.
+
+## License and reporting
+
+Apache License 2.0 — see [LICENSE](LICENSE). Copyright 2026 MetaShield.
+The license grants no trademark rights, and redistributions of modified files must
+say that they were changed.
+
+Security issues: see [SECURITY.md](SECURITY.md). Please do not file vulnerabilities
+as public issues.

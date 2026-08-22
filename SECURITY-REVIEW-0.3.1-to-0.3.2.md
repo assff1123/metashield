@@ -230,3 +230,16 @@ A안(확인 전용)으로 구현했습니다. 자동 내려받기·설치(C안)�
 
 최종 배포물: `outputs/MetaShield-0.3.3-direct.dmg`
 SHA-256 `9f1565d1ef369869ecb5d193c83cb175ec5c7606368ff8bd1a6fa97b5ebe634c`
+
+## F8 처리 완료 (0.3.4)
+
+- `LICENSE` — Apache-2.0 전문, 저작권자 `2026 MetaShield` (실명 미표기)
+- `SECURITY.md` — GitHub 비공개 취약점 신고 창구, 지원 버전, 범위 안팎 명시
+- `PRIVACY.md` — 지원 창구를 GitHub Issues 로 확정 (플레이스홀더 제거)
+- `README.md` — AI 보조 개발 사실과 라이선스·신고 절차 명시
+- DMG 안에 `LICENSE.txt` 사본 포함 (Apache-2.0 배포 요건)
+
+최종 배포물: `outputs/MetaShield-0.3.4-direct.dmg`
+SHA-256 `f58b477e01ef7a6ea6588f9552e0fdfe1ec14a89317c1efd6eba4111d749732b`
+
+이로써 보고서의 배포 차단 항목은 모두 해소되었습니다.

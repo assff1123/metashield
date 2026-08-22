@@ -1,7 +1,7 @@
-# MetaShield 0.3.3 배포 전 전수 감사
+# MetaShield 0.3.4 배포 전 전수 감사
 
 감사일: 2026-08-22 (0.3.1 감사 + 외부 재검증 결과를 0.3.2에 반영)  
-대상: MetaShield 0.3.3 (build 16), macOS 13 이상, arm64/x86_64
+대상: MetaShield 0.3.4 (build 17), macOS 13 이상, arm64/x86_64
 
 ## 결론
 
@@ -121,7 +121,7 @@ VoiceOver 실사용 통과를 주장하지 않습니다. 공개 전 VoiceOver, �
 3. **사진 무응답 처리:** 권한 또는 가져오기 서비스가 응답하지 않으면 60초 뒤 임시 파일을 지우고
    종료합니다. 헤드리스 `다음으로 편집` 실패는 창을 띄우지 않으므로 새 이미지가 없으면 사용자가
    시스템 설정의 사진 권한을 확인해야 합니다.
-4. **지원/법적 문서:** `PRIVACY.md`의 실제 지원 주소와 배포 라이선스 또는 이용 조건, 취약점 신고
+4. **지원/법적 문서:** (해결) Apache-2.0 `LICENSE`, `SECURITY.md`, `PRIVACY.md` 연락처를 넣었습니다. 이전 항목: `PRIVACY.md`의 실제 지원 주소와 배포 라이선스 또는 이용 조건, 취약점 신고
    주소를 공개 전에 정해야 합니다.
 5. **별도 Mac QA:** 현재 Mac의 격리 복사본으로 신규 설치를 모사했지만 macOS 13 실기와 완전히
    깨끗한 별도 Mac 시험은 하지 못했습니다.
@@ -140,8 +140,8 @@ VoiceOver 실사용 통과를 주장하지 않습니다. 공개 전 VoiceOver, �
 
 ## 최종 직접 배포물
 
-- `outputs/MetaShield-0.3.3-direct.dmg`
-- SHA-256: `9f1565d1ef369869ecb5d193c83cb175ec5c7606368ff8bd1a6fa97b5ebe634c`
+- `outputs/MetaShield-0.3.4-direct.dmg`
+- SHA-256: `f58b477e01ef7a6ea6588f9552e0fdfe1ec14a89317c1efd6eba4111d749732b`
 
 0.3.1 배포물은 위 알파 결함 때문에 배포 대상에서 제외하고 `outputs/archive-pre-0.3.2/`로 옮겼습니다.
 
