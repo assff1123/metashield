@@ -141,7 +141,12 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
   override func viewDidAppear() {
     super.viewDidAppear()
     providers = imageProviders()
-    if providers.isEmpty {
+    if providers.count == 1,
+      PhotoPermissionSetup.isSetupRequest(
+        registeredTypeIdentifiers: providers[0].registeredTypeIdentifiers)
+    {
+      beginPhotoPermissionSetup()
+    } else if providers.isEmpty {
       showStatus("사진 앱에서 이미지 데이터를 받지 못했습니다.", color: .systemRed)
       cancelButton.title = "닫기"
     } else if providers.count > shareMaximumItemCount {
@@ -152,6 +157,47 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
       DispatchQueue.main.async { [weak self] in
         self?.processSelection()
       }
+    }
+  }
+
+  private func beginPhotoPermissionSetup() {
+    guard !isProcessing else { return }
+    isProcessing = true
+    titleLabel.stringValue = "사진 앱 권한 연결"
+    detailLabel.stringValue =
+      "사진 앱 공유 기능에 필요한 사진 추가 권한만 확인합니다. 설정 이미지는 보관함에 추가하지 않습니다."
+    cancelButton.isEnabled = false
+    spinner.startAnimation(nil)
+    showStatus("사진 추가 권한을 확인하는 중…")
+
+    switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
+    case .authorized, .limited:
+      finishPhotoPermissionSetup()
+    case .notDetermined:
+      Self.requestPhotoAuthorization { [weak self] status in
+        guard let self else { return }
+        if status == .authorized || status == .limited {
+          self.finishPhotoPermissionSetup()
+        } else {
+          self.finishWithError(
+            Self.photoLibraryError(
+              "사진 추가 권한이 필요합니다. 시스템 설정의 개인정보 보호 및 보안 > 사진에서 허용하세요."))
+        }
+      }
+    case .denied, .restricted:
+      finishWithError(
+        Self.photoLibraryError(
+          "사진 추가 권한이 꺼져 있습니다. 시스템 설정의 개인정보 보호 및 보안 > 사진에서 허용하세요."))
+    @unknown default:
+      finishWithError(Self.photoLibraryError("알 수 없는 사진 보관함 권한 상태입니다."))
+    }
+  }
+
+  private func finishPhotoPermissionSetup() {
+    spinner.stopAnimation(nil)
+    showStatus("연결 완료: 설정 이미지는 사진 보관함에 추가되지 않았습니다.", color: .systemGreen)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+      self?.extensionContext?.completeRequest(returningItems: nil)
     }
   }
 
@@ -381,22 +427,20 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
     case .authorized, .limited:
       performPhotoImport(urls, token: token, temporaryDirectory: temporaryDirectory)
     case .notDetermined:
-      PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
-        Task { @MainActor [weak self] in
-          guard let self, self.activePhotoImportToken == token,
-            !self.cancellationState.isCancelled
-          else { return }
-          guard status == .authorized || status == .limited else {
-            self.completePhotoImport(
-              token: token,
-              temporaryDirectory: temporaryDirectory,
-              result: .failure(Self.photoLibraryError("사진 추가 권한이 필요합니다.")),
-              count: urls.count
-            )
-            return
-          }
-          self.performPhotoImport(urls, token: token, temporaryDirectory: temporaryDirectory)
+      Self.requestPhotoAuthorization { [weak self] status in
+        guard let self, self.activePhotoImportToken == token,
+          !self.cancellationState.isCancelled
+        else { return }
+        guard status == .authorized || status == .limited else {
+          self.completePhotoImport(
+            token: token,
+            temporaryDirectory: temporaryDirectory,
+            result: .failure(Self.photoLibraryError("사진 추가 권한이 필요합니다.")),
+            count: urls.count
+          )
+          return
         }
+        self.performPhotoImport(urls, token: token, temporaryDirectory: temporaryDirectory)
       }
     case .denied, .restricted:
       completePhotoImport(
@@ -421,26 +465,47 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
     // Prevent a misleading cancel click during commit.
     cancelButton.isEnabled = false
     showStatus("정리된 이미지를 사진 보관함에 추가하는 중…")
+    Self.performPhotoLibraryChanges(urls) { [weak self] success, error in
+      guard let self, self.activePhotoImportToken == token else { return }
+      let result: Result<Void, Error>
+      if success {
+        result = .success(())
+      } else {
+        result = .failure(
+          error ?? Self.photoLibraryError("정리된 이미지를 사진 보관함에 추가하지 못했습니다."))
+      }
+      self.completePhotoImport(
+        token: token,
+        temporaryDirectory: temporaryDirectory,
+        result: result,
+        count: urls.count
+      )
+    }
+  }
+
+  /// PhotoKit completes on private queues. Keep those system callbacks
+  /// nonisolated and enter MainActor only before accessing extension UI/state.
+  nonisolated private static func requestPhotoAuthorization(
+    completion: @escaping @MainActor @Sendable (PHAuthorizationStatus) -> Void
+  ) {
+    PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+      Task { @MainActor in
+        completion(status)
+      }
+    }
+  }
+
+  nonisolated private static func performPhotoLibraryChanges(
+    _ urls: [URL],
+    completion: @escaping @MainActor @Sendable (Bool, Error?) -> Void
+  ) {
     PHPhotoLibrary.shared().performChanges {
       for url in urls {
         PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: url)
       }
-    } completionHandler: { [weak self] success, error in
-      Task { @MainActor [weak self] in
-        guard let self, self.activePhotoImportToken == token else { return }
-        let result: Result<Void, Error>
-        if success {
-          result = .success(())
-        } else {
-          result = .failure(
-            error ?? Self.photoLibraryError("정리된 이미지를 사진 보관함에 추가하지 못했습니다."))
-        }
-        self.completePhotoImport(
-          token: token,
-          temporaryDirectory: temporaryDirectory,
-          result: result,
-          count: urls.count
-        )
+    } completionHandler: { success, error in
+      Task { @MainActor in
+        completion(success, error)
       }
     }
   }

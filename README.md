@@ -13,7 +13,7 @@ off-by-default GitHub release check; image data and metadata are never transmitt
 MetaShield was developed with AI coding assistance. The sanitizing core, the file
 replacement path, and the update check were reviewed by a human against the threat
 model in `AUDIT.md`, and every claim in the guarantee boundary below is backed by an
-automated self test (`swift run -c release metashield-self-test`, 16/16). No
+automated self test (`swift run -c release metashield-self-test`, 20/20). No
 third-party code is vendored: the app links only Apple system frameworks and the
 system zlib.
 
@@ -139,17 +139,17 @@ After installing and launching MetaShield once, supported applications can show:
 
 The host application decides whether it exposes a selected image to macOS Services.
 Dragging to MetaShield is the reliable fallback for Photos, browsers, and other apps.
-For Finder's dedicated Quick Actions submenu, install the bundled workflow from
-`packaging/quick-action` into `~/Library/Services`. The in-app
-`Finder 빠른 동작 설치/복구` button also enables the workflow in Finder's
-`FinderActive` preference and restarts Finder, which macOS 26 may require even
-after the workflow has been registered successfully. The Finder workflow runs the
-bundled CLI directly, without launching the app or showing a confirmation dialog.
-PNG inputs are verified and replaced in place; other still-image formats produce a
-uniquely named `.clean.png` beside the source.
-
-If automatic registration fails, the workflow itself remains installed. Enable it
-manually in `System Settings > General > Login Items & Extensions`.
+The Finder command is a bundle-contained AppKit Service. MetaShield does not copy a
+workflow, helper, or background agent outside the app bundle. PNG inputs are verified
+and replaced in place; other still-image formats produce a uniquely named `.clean.png`
+beside the source. Releases from 0.3.8 onward remove the legacy 0.3.7-and-earlier
+workflow the first time they launch. The main window's `사진 앱 권한 연결…` button opens
+Apple's share picker with a metadata-free setup image. Select MetaShield there once to
+grant the share extension's add-only Photos permission; the setup image is never
+imported. macOS may still show its fixed Copy/Edit Extensions rows in that picker.
+Notification permission remains optional and is requested only when the user enables
+GitHub update checks. Other Photos hand-off paths run under the host app and may receive
+their own one-time permission prompt when first used.
 
 ## Direct distribution
 

@@ -1,7 +1,7 @@
 // Builds and signs the release manifest for one DMG.
 //
 //   swift scripts/sign-update-manifest.swift \
-//       outputs/MetaShield-0.3.7-direct.dmg ~/usb/metashield-update.key outputs
+//       outputs/MetaShield-<version>-direct.dmg ~/usb/metashield-update.key outputs
 //
 // Produces metashield-update.json and metashield-update.json.sig next to the
 // chosen output directory. The manifest holds no URL: the app derives every

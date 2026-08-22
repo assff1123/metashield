@@ -18,6 +18,64 @@ private enum MetaShieldApplication {
   }
 }
 
+/// Releases through 0.3.7 copied an Automator workflow into
+/// `~/Library/Services` and enabled it in Finder's `pbs` preferences. The app
+/// now advertises a bundle-contained AppKit Service, so remove only the legacy
+/// artifacts that MetaShield itself created. This migration is idempotent and
+/// leaves every unrelated Service preference intact.
+@MainActor
+private enum LegacyQuickActionCleaner {
+  private static let identifier = "kr.metashield.quick-action"
+  private static let installedWorkflowName = "MetaShield 메타데이터 완전 제거.workflow"
+
+  static func run() {
+    let fileManager = FileManager.default
+    let servicesDirectory = fileManager.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/Services", isDirectory: true)
+    var changed = false
+
+    let installedWorkflow = servicesDirectory.appendingPathComponent(
+      installedWorkflowName, isDirectory: true)
+    if fileManager.fileExists(atPath: installedWorkflow.path) {
+      do {
+        try fileManager.removeItem(at: installedWorkflow)
+        changed = true
+      } catch {
+        // A failed best-effort migration must never prevent image processing.
+      }
+    }
+
+    if let children = try? fileManager.contentsOfDirectory(
+      at: servicesDirectory,
+      includingPropertiesForKeys: nil,
+      options: [.skipsSubdirectoryDescendants]
+    ) {
+      for child in children
+      where child.lastPathComponent.hasPrefix(".MetaShield-")
+        && child.pathExtension == "workflow"
+      {
+        if (try? fileManager.removeItem(at: child)) != nil {
+          changed = true
+        }
+      }
+    }
+
+    if let preferences = UserDefaults(suiteName: "pbs") {
+      for key in ["FinderActive", "FinderOrdering"] {
+        guard var values = preferences.dictionary(forKey: key),
+          values.removeValue(forKey: identifier) != nil
+        else { continue }
+        preferences.set(values, forKey: key)
+        changed = true
+      }
+    }
+
+    if changed {
+      NSUpdateDynamicServices()
+    }
+  }
+}
+
 @MainActor
 private final class ApplicationDelegate: NSObject, NSApplicationDelegate,
   UNUserNotificationCenterDelegate
@@ -39,6 +97,8 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate,
     let isDefaultLaunch =
       (notification.userInfo?[NSApplication.launchIsDefaultUserInfoKey] as? NSNumber)?.boolValue
       ?? false
+
+    LegacyQuickActionCleaner.run()
 
     let controller = MainViewController()
     let window = NSWindow(
@@ -342,7 +402,9 @@ private struct ProcessingFailure: @unchecked Sendable {
   let error: Error
 }
 
-private final class MainViewController: NSViewController, @unchecked Sendable {
+private final class MainViewController: NSViewController, NSSharingServiceDelegate,
+  @preconcurrency NSSharingServicePickerDelegate, @unchecked Sendable
+{
   private let titleLabel = NSTextField(labelWithString: "이미지의 숨은 정보를 남김없이 비웁니다")
   private let subtitleLabel = NSTextField(
     wrappingLabelWithString:
@@ -350,8 +412,8 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
   private let dropZone = DropZoneView()
   private let statusLabel = NSTextField(wrappingLabelWithString: "이미지를 이곳에 놓거나 아래 버튼으로 선택하세요.")
   private let chooseButton = NSButton(title: "이미지 선택…", target: nil, action: nil)
-  private let installQuickActionButton = NSButton(
-    title: "Finder 빠른 동작 설치/복구", target: nil, action: nil)
+  private let photoPermissionButton = NSButton(
+    title: "사진 앱 권한 연결…", target: nil, action: nil)
   private let spinner = NSProgressIndicator()
   private let updateToggle = NSButton(
     checkboxWithTitle: "새 버전 확인 (GitHub)", target: nil, action: nil)
@@ -366,6 +428,8 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
   private var processingCompletion: ((Bool) -> Void)?
   private var temporaryInputDirectories: [URL] = []
   private var activePhotoImportToken: UUID?
+  private var photoPermissionPicker: NSSharingServicePicker?
+  private var photoPermissionProvider: NSItemProvider?
 
   override func loadView() {
     view = NSView()
@@ -390,12 +454,12 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
     chooseButton.keyEquivalentModifierMask = [.command]
     chooseButton.setAccessibilityHelp("파일 선택 창을 열어 한 개 이상의 이미지를 선택합니다.")
 
-    installQuickActionButton.target = self
-    installQuickActionButton.action = #selector(installQuickAction)
-    installQuickActionButton.bezelStyle = .rounded
-    installQuickActionButton.controlSize = .large
-    installQuickActionButton.setAccessibilityHelp(
-      "Finder 이미지 우클릭 메뉴용 빠른 동작을 설치하거나 복구합니다. Finder가 다시 시작될 수 있습니다.")
+    photoPermissionButton.target = self
+    photoPermissionButton.action = #selector(connectPhotosPermission)
+    photoPermissionButton.bezelStyle = .rounded
+    photoPermissionButton.controlSize = .large
+    photoPermissionButton.setAccessibilityHelp(
+      "사진 앱 공유 확장의 사진 추가 권한을 한 번 설정합니다. 시스템 공유 창에서 MetaShield를 선택하세요.")
 
     spinner.style = .spinning
     spinner.controlSize = .small
@@ -440,18 +504,18 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
     statusRow.spacing = 8
     statusRow.alignment = .centerY
 
-    let buttonRow = NSStackView(views: [chooseButton, installQuickActionButton])
-    buttonRow.orientation = .horizontal
-    buttonRow.spacing = 10
-    buttonRow.alignment = .centerY
-
     let updateRow = NSStackView(views: [updateToggle, downloadUpdateButton, openReleaseButton])
     updateRow.orientation = .horizontal
     updateRow.spacing = 10
     updateRow.alignment = .centerY
 
+    let actionRow = NSStackView(views: [chooseButton, photoPermissionButton])
+    actionRow.orientation = .horizontal
+    actionRow.spacing = 10
+    actionRow.alignment = .centerY
+
     let stack = NSStackView(views: [
-      titleLabel, subtitleLabel, dropZone, statusRow, buttonRow, updateRow, updateStatusLabel,
+      titleLabel, subtitleLabel, dropZone, statusRow, actionRow, updateRow, updateStatusLabel,
     ])
     stack.orientation = .vertical
     stack.alignment = .centerX
@@ -470,6 +534,7 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
       dropZone.heightAnchor.constraint(equalToConstant: 190),
       statusRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
       statusLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor, constant: -28),
+      actionRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
       updateRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
       updateStatusLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
     ])
@@ -486,6 +551,87 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
     if panel.runModal() == .OK {
       receiveFileURLs(panel.urls)
     }
+  }
+
+  @objc private func connectPhotosPermission() {
+    guard !isProcessing, photoPermissionPicker == nil else { return }
+
+    let provider = NSItemProvider()
+    provider.suggestedName = PhotoPermissionSetup.suggestedFileName
+    provider.registerDataRepresentation(
+      forTypeIdentifier: UTType.png.identifier,
+      visibility: .all
+    ) { completion in
+      completion(PhotoPermissionSetup.previewPNGData, nil)
+      return nil
+    }
+    provider.registerDataRepresentation(
+      forTypeIdentifier: PhotoPermissionSetup.typeIdentifier,
+      visibility: .all
+    ) { completion in
+      completion(PhotoPermissionSetup.markerData, nil)
+      return nil
+    }
+
+    let picker = NSSharingServicePicker(items: [provider])
+    picker.delegate = self
+    photoPermissionProvider = provider
+    photoPermissionPicker = picker
+    showStatus("공유 창에서 MetaShield를 선택해 사진 앱 권한을 연결하세요.", isError: false)
+    NSUpdateDynamicServices()
+    picker.show(
+      relativeTo: photoPermissionButton.bounds,
+      of: photoPermissionButton,
+      preferredEdge: .maxY
+    )
+  }
+
+  func sharingServicePicker(
+    _ sharingServicePicker: NSSharingServicePicker,
+    sharingServicesForItems items: [Any],
+    proposedSharingServices proposedServices: [NSSharingService]
+  ) -> [NSSharingService] {
+    let matchingServices = proposedServices.filter { $0.title == "MetaShield" }
+    guard let service = matchingServices.first else { return [] }
+    return [service]
+  }
+
+  func sharingServicePicker(
+    _ sharingServicePicker: NSSharingServicePicker,
+    delegateFor sharingService: NSSharingService
+  ) -> (any NSSharingServiceDelegate)? {
+    self
+  }
+
+  func sharingServicePicker(
+    _ sharingServicePicker: NSSharingServicePicker,
+    didChoose sharingService: NSSharingService?
+  ) {
+    guard sharingService == nil else { return }
+    clearPhotoPermissionPicker()
+    showStatus("사진 앱 권한 연결을 취소했습니다.", isError: false)
+  }
+
+  func sharingService(_ sharingService: NSSharingService, didShareItems items: [Any]) {
+    clearPhotoPermissionPicker()
+    showStatus(
+      "사진 앱 권한 연결 완료. 이제 사진 앱의 공유 메뉴에서 MetaShield를 바로 사용할 수 있습니다.",
+      isError: false
+    )
+  }
+
+  func sharingService(
+    _ sharingService: NSSharingService,
+    didFailToShareItems items: [Any],
+    error: Error
+  ) {
+    clearPhotoPermissionPicker()
+    showStatus("사진 앱 권한을 연결하지 못했습니다: \(error.localizedDescription)", isError: true)
+  }
+
+  private func clearPhotoPermissionPicker() {
+    photoPermissionPicker = nil
+    photoPermissionProvider = nil
   }
 
   @objc private func toggleUpdateCheck() {
@@ -581,109 +727,6 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
       openReleaseButton.isHidden = true
     }
     NSAccessibility.post(element: updateStatusLabel, notification: .valueChanged)
-  }
-
-  @objc private func installQuickAction() {
-    guard let resources = Bundle.main.resourceURL else {
-      showStatus("앱 리소스 폴더를 찾지 못했습니다.", isError: true)
-      return
-    }
-    let bundledWorkflowName = "MetaShieldQuickAction.workflow"
-    let installedWorkflowName = "MetaShield 메타데이터 완전 제거.workflow"
-    let source = resources.appendingPathComponent(bundledWorkflowName, isDirectory: true)
-    let services = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent("Library/Services", isDirectory: true)
-    let destination = services.appendingPathComponent(installedWorkflowName, isDirectory: true)
-    let temporary = services.appendingPathComponent(
-      ".MetaShield-\(UUID().uuidString).workflow", isDirectory: true)
-
-    do {
-      guard FileManager.default.fileExists(atPath: source.path) else {
-        throw MetaShieldError.fileOperationFailed("Finder 빠른 동작 리소스가 없습니다.")
-      }
-      try FileManager.default.createDirectory(at: services, withIntermediateDirectories: true)
-      try FileManager.default.copyItem(at: source, to: temporary)
-      if FileManager.default.fileExists(atPath: destination.path) {
-        _ = try FileManager.default.replaceItemAt(
-          destination,
-          withItemAt: temporary,
-          backupItemName: nil,
-          options: [.usingNewMetadataOnly]
-        )
-      } else {
-        try FileManager.default.moveItem(at: temporary, to: destination)
-      }
-      let refreshWarnings = refreshServicesDatabase()
-      if refreshWarnings.isEmpty {
-        showStatus("Finder 빠른 동작을 설치했고 Finder를 다시 시작했습니다. 이미지 우클릭 → 빠른 동작에서 사용하세요.", isError: false)
-      } else {
-        showStatus(
-          "빠른 동작 파일은 설치됐지만 자동 등록에 실패했습니다. 시스템 설정 → 일반 → 로그인 항목 및 확장 프로그램에서 MetaShield를 켜세요.",
-          isError: true)
-      }
-    } catch {
-      try? FileManager.default.removeItem(at: temporary)
-      showStatus("빠른 동작 설치 실패: \(error.localizedDescription)", isError: true)
-    }
-  }
-
-  private func refreshServicesDatabase() -> [String] {
-    NSUpdateDynamicServices()
-    let quickActionIdentifier = "kr.metashield.quick-action"
-    var warnings: [String] = []
-
-    // On macOS 26, copying a workflow to ~/Library/Services registers it with
-    // pbs but does not necessarily enable it in Finder's Quick Actions menu.
-    // Keep the user's existing entries and add MetaShield explicitly.
-    if !runAndWait(
-      executable: "/usr/bin/defaults",
-      arguments: [
-        "write", "pbs", "FinderActive", "-dict-add",
-        quickActionIdentifier, "-bool", "true",
-      ]
-    ) {
-      warnings.append("FinderActive")
-    }
-    if !runAndWait(
-      executable: "/usr/bin/defaults",
-      arguments: [
-        "write", "pbs", "FinderOrdering", "-dict-add",
-        quickActionIdentifier, "-int", "999",
-      ]
-    ) {
-      warnings.append("FinderOrdering")
-    }
-    if !runAndWait(
-      executable: "/System/Library/CoreServices/pbs",
-      arguments: ["-flush", "ko", "en"]
-    ) {
-      warnings.append("pbs flush")
-    }
-    if !runAndWait(
-      executable: "/System/Library/CoreServices/pbs",
-      arguments: ["-update"]
-    ) {
-      warnings.append("pbs update")
-    }
-    if !runAndWait(executable: "/usr/bin/killall", arguments: ["Finder"]) {
-      warnings.append("Finder restart")
-    }
-    return warnings
-  }
-
-  private func runAndWait(executable: String, arguments: [String]) -> Bool {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: executable)
-    process.arguments = arguments
-    do {
-      try process.run()
-      process.waitUntilExit()
-      return process.terminationStatus == 0
-    } catch {
-      // Installation has already completed at this point. The status text
-      // tells the user where to enable the item manually if refresh fails.
-      return false
-    }
   }
 
   func receiveFileURLs(
@@ -937,32 +980,30 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
       NSApp.setActivationPolicy(.regular)
       NSApp.activate(ignoringOtherApps: true)
     }
-    PHPhotoLibrary.requestAuthorization(for: .addOnly) { [self] status in
-      Task { @MainActor in
-        guard self.activePhotoImportToken == token else { return }
-        guard status == .authorized || status == .limited else {
-          let error = NSError(
-            domain: "kr.metashield.app.photos",
-            code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "사진 보관함 추가 권한이 필요합니다."]
-          )
-          self.completePhotoImport(
-            token: token,
-            restoreAccessoryPolicy: restoreAccessoryPolicy,
-            successes: successes,
-            failures: failures + [ProcessingFailure(url: sourceForError, error: error)]
-          )
-          return
-        }
-        self.performPhotoImport(
-          urls,
+    Self.requestPhotoAuthorization { [weak self] status in
+      guard let self, self.activePhotoImportToken == token else { return }
+      guard status == .authorized || status == .limited else {
+        let error = NSError(
+          domain: "kr.metashield.app.photos",
+          code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "사진 보관함 추가 권한이 필요합니다."]
+        )
+        self.completePhotoImport(
           token: token,
           restoreAccessoryPolicy: restoreAccessoryPolicy,
           successes: successes,
-          failures: failures,
-          sourceForError: sourceForError
+          failures: failures + [ProcessingFailure(url: sourceForError, error: error)]
         )
+        return
       }
+      self.performPhotoImport(
+        urls,
+        token: token,
+        restoreAccessoryPolicy: restoreAccessoryPolicy,
+        successes: successes,
+        failures: failures,
+        sourceForError: sourceForError
+      )
     }
   }
 
@@ -974,35 +1015,58 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
     failures: [ProcessingFailure],
     sourceForError: URL
   ) {
+    Self.performPhotoLibraryChanges(urls) { [weak self] imported, error in
+      guard let self, self.activePhotoImportToken == token else { return }
+      if imported {
+        self.completePhotoImport(
+          token: token,
+          restoreAccessoryPolicy: restoreAccessoryPolicy,
+          successes: successes + urls,
+          failures: failures
+        )
+      } else {
+        let importError =
+          error
+          ?? NSError(
+            domain: "kr.metashield.app.photos",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "사진 보관함에 추가하지 못했습니다."]
+          )
+        self.completePhotoImport(
+          token: token,
+          restoreAccessoryPolicy: restoreAccessoryPolicy,
+          successes: successes,
+          failures: failures + [ProcessingFailure(url: sourceForError, error: importError)]
+        )
+      }
+    }
+  }
+
+  /// Photos invokes both completion handlers on private queues. Construct the
+  /// system-facing closures outside MainActor isolation, then hop explicitly
+  /// before touching UI or controller state. This avoids Swift 6's runtime
+  /// executor precondition trapping on `com.apple.PHPhotoLibrary.changes`.
+  nonisolated private static func requestPhotoAuthorization(
+    completion: @escaping @MainActor @Sendable (PHAuthorizationStatus) -> Void
+  ) {
+    PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+      Task { @MainActor in
+        completion(status)
+      }
+    }
+  }
+
+  nonisolated private static func performPhotoLibraryChanges(
+    _ urls: [URL],
+    completion: @escaping @MainActor @Sendable (Bool, Error?) -> Void
+  ) {
     PHPhotoLibrary.shared().performChanges {
       for url in urls {
         PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: url)
       }
-    } completionHandler: { [self] imported, error in
+    } completionHandler: { imported, error in
       Task { @MainActor in
-        guard self.activePhotoImportToken == token else { return }
-        if imported {
-          self.completePhotoImport(
-            token: token,
-            restoreAccessoryPolicy: restoreAccessoryPolicy,
-            successes: successes + urls,
-            failures: failures
-          )
-        } else {
-          let importError =
-            error
-            ?? NSError(
-              domain: "kr.metashield.app.photos",
-              code: 2,
-              userInfo: [NSLocalizedDescriptionKey: "사진 보관함에 추가하지 못했습니다."]
-            )
-          self.completePhotoImport(
-            token: token,
-            restoreAccessoryPolicy: restoreAccessoryPolicy,
-            successes: successes,
-            failures: failures + [ProcessingFailure(url: sourceForError, error: importError)]
-          )
-        }
+        completion(imported, error)
       }
     }
   }
@@ -1082,7 +1146,7 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
   private func beginProcessing() {
     isProcessing = true
     chooseButton.isEnabled = false
-    installQuickActionButton.isEnabled = false
+    photoPermissionButton.isEnabled = false
     dropZone.isEnabled = false
     spinner.startAnimation(nil)
     showStatus("디코딩·정리·재검증 중…", isError: false)
@@ -1116,7 +1180,7 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
   private func resetProcessingControls() {
     isProcessing = false
     chooseButton.isEnabled = true
-    installQuickActionButton.isEnabled = true
+    photoPermissionButton.isEnabled = true
     dropZone.isEnabled = true
     spinner.stopAnimation(nil)
   }
@@ -1703,7 +1767,25 @@ private enum UpdateChecker {
 
   static func requestNotificationAuthorization() {
     guard canUseNotifications else { return }
+    requestNotificationAuthorizationOffActor()
+  }
+
+  /// UserNotifications completes on framework-owned queues. Construct its
+  /// callbacks outside MainActor so Swift does not attach a main-executor
+  /// precondition to a closure the framework invokes on a private queue.
+  nonisolated private static func requestNotificationAuthorizationOffActor() {
     UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
+  }
+
+  nonisolated private static func fetchNotificationAuthorization(
+    completion: @escaping @MainActor @Sendable (Bool) -> Void
+  ) {
+    UNUserNotificationCenter.current().getNotificationSettings { settings in
+      let isAuthorized = settings.authorizationStatus == .authorized
+      Task { @MainActor in
+        completion(isAuthorized)
+      }
+    }
   }
 
   /// Used by headless Finder, Services, and Photos runs. It posts a banner only
@@ -1717,21 +1799,18 @@ private enum UpdateChecker {
       return
     }
     let gate = CompletionGate(completion)
-    UNUserNotificationCenter.current().getNotificationSettings { settings in
-      let isAuthorized = settings.authorizationStatus == .authorized
-      Task { @MainActor in
-        guard isAuthorized else {
-          gate.fire()
-          return
-        }
-        let didStart = checkIfDue { outcome in
-          if case .updateAvailable(let latest) = outcome {
-            postUpdateNotification(latest: latest)
-          }
-          gate.fire()
-        }
-        if !didStart { gate.fire() }
+    fetchNotificationAuthorization { isAuthorized in
+      guard isAuthorized else {
+        gate.fire()
+        return
       }
+      let didStart = checkIfDue { outcome in
+        if case .updateAvailable(let latest) = outcome {
+          postUpdateNotification(latest: latest)
+        }
+        gate.fire()
+      }
+      if !didStart { gate.fire() }
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + backgroundDeadline) {
       gate.fire()

@@ -31,19 +31,12 @@ fi
 
 HOST_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROJECT_DIR/packaging/Info.plist")
 SHARE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROJECT_DIR/packaging/share/Info.plist")
-WORKFLOW_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROJECT_DIR/packaging/quick-action/MetaShield 메타데이터 완전 제거.workflow/Contents/Info.plist")
 HOST_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROJECT_DIR/packaging/Info.plist")
 SHARE_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROJECT_DIR/packaging/share/Info.plist")
-WORKFLOW_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROJECT_DIR/packaging/quick-action/MetaShield 메타데이터 완전 제거.workflow/Contents/Info.plist")
 HOST_RELEASE="$HOST_VERSION:$HOST_BUILD"
 SHARE_RELEASE="$SHARE_VERSION:$SHARE_BUILD"
-WORKFLOW_RELEASE="$WORKFLOW_VERSION:$WORKFLOW_BUILD"
 if [[ "$HOST_RELEASE" != "$SHARE_RELEASE" ]]; then
-    echo "호스트·공유 확장·빠른 동작의 버전 또는 빌드 번호가 일치하지 않습니다." >&2
-    exit 1
-fi
-if [[ "$HOST_RELEASE" != "$WORKFLOW_RELEASE" ]]; then
-    echo "호스트·공유 확장·빠른 동작의 버전 또는 빌드 번호가 일치하지 않습니다." >&2
+    echo "호스트·공유 확장의 버전 또는 빌드 번호가 일치하지 않습니다." >&2
     exit 1
 fi
 

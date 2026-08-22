@@ -10,14 +10,11 @@ APP_TEMP="$WORK_DIR/MetaShield.app"
 
 HOST_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROJECT_DIR/packaging/Info.plist")
 SHARE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROJECT_DIR/packaging/share/Info.plist")
-WORKFLOW_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROJECT_DIR/packaging/quick-action/MetaShield 메타데이터 완전 제거.workflow/Contents/Info.plist")
 HOST_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROJECT_DIR/packaging/Info.plist")
 SHARE_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROJECT_DIR/packaging/share/Info.plist")
-WORKFLOW_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROJECT_DIR/packaging/quick-action/MetaShield 메타데이터 완전 제거.workflow/Contents/Info.plist")
 
-if [[ "$HOST_VERSION:$HOST_BUILD" != "$SHARE_VERSION:$SHARE_BUILD" ]] || \
-   [[ "$HOST_VERSION:$HOST_BUILD" != "$WORKFLOW_VERSION:$WORKFLOW_BUILD" ]]; then
-    echo "앱·공유 확장·빠른 동작의 버전 또는 빌드 번호가 일치하지 않습니다." >&2
+if [[ "$HOST_VERSION:$HOST_BUILD" != "$SHARE_VERSION:$SHARE_BUILD" ]]; then
+    echo "앱·공유 확장의 버전 또는 빌드 번호가 일치하지 않습니다." >&2
     exit 1
 fi
 
@@ -90,13 +87,9 @@ strip_toolchain_rpath "$APP_TEMP/Contents/PlugIns/MetaShield Share.appex/Content
 /bin/cp "$PROJECT_DIR/packaging/Info.plist" "$APP_TEMP/Contents/Info.plist"
 /bin/cp "$PROJECT_DIR/packaging/share/Info.plist" \
     "$APP_TEMP/Contents/PlugIns/MetaShield Share.appex/Contents/Info.plist"
-/usr/bin/ditto \
-    "$PROJECT_DIR/packaging/quick-action/MetaShield 메타데이터 완전 제거.workflow" \
-    "$APP_TEMP/Contents/Resources/MetaShieldQuickAction.workflow"
 /usr/bin/swift "$PROJECT_DIR/scripts/make-icon.swift" "$APP_TEMP/Contents/Resources/AppIcon.icns"
 /usr/bin/plutil -lint "$APP_TEMP/Contents/Info.plist"
 /usr/bin/plutil -lint "$APP_TEMP/Contents/PlugIns/MetaShield Share.appex/Contents/Info.plist"
-/usr/bin/plutil -lint "$APP_TEMP/Contents/Resources/MetaShieldQuickAction.workflow/Contents/Info.plist"
 
 # Sign from the innermost code outward. Public releases must be re-signed and
 # notarized with scripts/sign-and-notarize.sh.

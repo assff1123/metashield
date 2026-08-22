@@ -719,6 +719,23 @@ private func testMalformedCorpusNeverCorruptsInput() throws {
   }
 }
 
+private func testPhotoPermissionSetupMarker() throws {
+  let inspection = try PNGInspector.verifyCanonical(PhotoPermissionSetup.previewPNGData)
+  try expect(
+    inspection.width == 1 && inspection.height == 1,
+    "권한 설정용 PNG 크기가 예상과 다릅니다."
+  )
+  try expect(
+    PhotoPermissionSetup.isSetupRequest(
+      registeredTypeIdentifiers: ["public.png", PhotoPermissionSetup.typeIdentifier]),
+    "권한 설정 마커를 인식하지 못했습니다."
+  )
+  try expect(
+    !PhotoPermissionSetup.isSetupRequest(registeredTypeIdentifiers: ["public.png"]),
+    "일반 PNG를 권한 설정 요청으로 잘못 인식했습니다."
+  )
+}
+
 let tests: [(String, () throws -> Void)] = [
   ("PNG 메타데이터·알파·xattr 제거", testAggressiveSanitization),
   ("알파 하위 비트 은닉 payload 제거", testAlphaLowBitPayloadIsDestroyed),
@@ -739,6 +756,7 @@ let tests: [(String, () throws -> Void)] = [
   ("PNG 꼬리 데이터 거부", testTrailingPNGDataIsRejected),
   ("IEND·IDAT 숨은 페이로드 거부", testHiddenChunkPayloadsAreRejected),
   ("변조 PNG 코퍼스 원본 안전", testMalformedCorpusNeverCorruptsInput),
+  ("사진 앱 권한 설정 마커", testPhotoPermissionSetupMarker),
 ]
 
 do {

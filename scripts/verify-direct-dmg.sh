@@ -67,13 +67,10 @@ require_universal "$APP_PATH/Contents/PlugIns/MetaShield Share.appex/Contents/Ma
 
 HOST_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")
 SHARE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/PlugIns/MetaShield Share.appex/Contents/Info.plist")
-WORKFLOW_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Resources/MetaShieldQuickAction.workflow/Contents/Info.plist")
 HOST_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")
 SHARE_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/PlugIns/MetaShield Share.appex/Contents/Info.plist")
-WORKFLOW_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Resources/MetaShieldQuickAction.workflow/Contents/Info.plist")
-if [[ "$HOST_VERSION:$HOST_BUILD" != "$SHARE_VERSION:$SHARE_BUILD" ]] || \
-   [[ "$HOST_VERSION:$HOST_BUILD" != "$WORKFLOW_VERSION:$WORKFLOW_BUILD" ]]; then
-    echo "DMG 안의 앱·공유 확장·빠른 동작 버전이 일치하지 않습니다." >&2
+if [[ "$HOST_VERSION:$HOST_BUILD" != "$SHARE_VERSION:$SHARE_BUILD" ]]; then
+    echo "DMG 안의 앱·공유 확장 버전이 일치하지 않습니다." >&2
     exit 1
 fi
 
