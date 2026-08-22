@@ -9,9 +9,9 @@
 	<key>CFBundleName</key>
 	<string>MetaShield 메타데이터 완전 제거</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.6</string>
+	<string>0.3.7</string>
 	<key>CFBundleVersion</key>
-	<string>19</string>
+	<string>20</string>
 	<key>NSServices</key>
 	<array>
 		<dict>

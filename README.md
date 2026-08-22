@@ -55,7 +55,16 @@ The optional check, off until the user enables it in the app window:
   discarded unless it is a plain `major.minor.patch` number;
 - rejects redirects and stops receiving the response as soon as it exceeds 512 KiB;
 - never takes a URL from the response — the release page it opens is compiled in;
-- shows a line of text and a button that opens that page in the default browser.
+- shows a line of text and a button that downloads the new disk image.
+
+The download is verified before the user ever sees the file. The app fetches a
+manifest signed with an offline Ed25519 key, checks the signature *before* parsing
+it, and only then downloads the disk image named by that manifest, rejecting it
+unless its size and SHA-256 match. The manifest carries no URL: every address is
+derived from compiled-in constants, so a compromised release host cannot redirect
+the download. The verified file lands in the Downloads folder, marked as
+downloaded so macOS still runs its first-launch check. MetaShield never installs
+it, and never replaces itself.
 
 When the check is enabled and macOS notification permission has already been granted,
 a headless Finder, Services, or Photos run may also check once a day after it finishes
@@ -112,7 +121,7 @@ the ad-hoc-signed development ZIP under `outputs/developer`. Keeping a second in
 menus. Install the ZIP's app in `/Applications` and launch it once so macOS registers
 its Services entry.
 
-`outputs/developer/MetaShield-0.3.5-local.zip` is a development artifact. For free direct distribution,
+`outputs/developer/MetaShield-<version>-local.zip` is a development artifact. For free direct distribution,
 build the user-facing DMG and its checksum with `./scripts/package-direct-dmg.sh`.
 
 For command-line verification:
@@ -150,7 +159,7 @@ Apple Developer Program membership, but macOS will require the user to choose
 
 ```sh
 ./scripts/package-direct-dmg.sh
-./scripts/verify-direct-dmg.sh outputs/MetaShield-0.3.6-direct.dmg
+./scripts/verify-direct-dmg.sh outputs/MetaShield-<version>-direct.dmg
 ```
 
 Distribute the resulting `.dmg` and matching `.sha256` over HTTPS. The DMG includes
@@ -169,7 +178,7 @@ METASHIELD_NOTARY_PROFILE="metashield-notary" \
 Then verify the exact notarized artifact before upload:
 
 ```sh
-./scripts/verify-release.sh outputs/MetaShield-0.3.5.dmg
+./scripts/verify-release.sh outputs/MetaShield-<version>.dmg
 ```
 
 See `DISTRIBUTION.md` for the complete clean-install, upgrade, rollback, and uninstall

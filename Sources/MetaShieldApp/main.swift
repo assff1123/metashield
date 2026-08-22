@@ -190,14 +190,10 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate,
 
   private func handleNotificationActivation(category: String) {
     guard category == UpdateChecker.updateNotificationCategory else { return }
-    // Opens the compiled-in release page. The notification carries no URL.
-    NSWorkspace.shared.open(UpdateChecker.releasePageURL)
-
-    // Clicking the banner can relaunch a process that has no work and no window.
-    guard !interactiveWindowShown, !hasExternalOpenRequest, externalRequests.isEmpty else { return }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-      NSApp.terminate(nil)
-    }
+    // Bring up the window instead of the browser: the verified download lives
+    // there, and a browser download would skip signature and checksum checks.
+    showInteractiveWindow()
+    controller?.checkForUpdatesNow()
   }
 }
 
@@ -360,7 +356,11 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
   private let updateToggle = NSButton(
     checkboxWithTitle: "새 버전 확인 (GitHub)", target: nil, action: nil)
   private let updateStatusLabel = NSTextField(labelWithString: "")
-  private let openReleaseButton = NSButton(title: "새 버전 받기…", target: nil, action: nil)
+  private let downloadUpdateButton = NSButton(
+    title: "검증된 DMG 받기…", target: nil, action: nil)
+  private let openReleaseButton = NSButton(title: "릴리스 페이지", target: nil, action: nil)
+  private var pendingUpdate: ReleaseVersion?
+  private var downloadedUpdate: URL?
   private var isProcessing = false
   private var isSilentProcessing = false
   private var processingCompletion: ((Bool) -> Void)?
@@ -412,6 +412,13 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
     updateStatusLabel.alignment = .center
     updateStatusLabel.setAccessibilityLabel("업데이트 확인 상태")
 
+    downloadUpdateButton.target = self
+    downloadUpdateButton.action = #selector(downloadVerifiedUpdate)
+    downloadUpdateButton.bezelStyle = .rounded
+    downloadUpdateButton.isHidden = true
+    downloadUpdateButton.setAccessibilityHelp(
+      "서명과 체크섬을 검증한 새 버전 DMG를 다운로드 폴더에 저장합니다. 설치는 직접 하셔야 합니다.")
+
     openReleaseButton.target = self
     openReleaseButton.action = #selector(openReleasePage)
     openReleaseButton.bezelStyle = .rounded
@@ -438,7 +445,7 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
     buttonRow.spacing = 10
     buttonRow.alignment = .centerY
 
-    let updateRow = NSStackView(views: [updateToggle, openReleaseButton])
+    let updateRow = NSStackView(views: [updateToggle, downloadUpdateButton, openReleaseButton])
     updateRow.orientation = .horizontal
     updateRow.spacing = 10
     updateRow.alignment = .centerY
@@ -486,7 +493,9 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
     UpdateChecker.isEnabled = isEnabled
     guard isEnabled else {
       updateStatusLabel.stringValue = ""
+      downloadUpdateButton.isHidden = true
       openReleaseButton.isHidden = true
+      pendingUpdate = nil
       return
     }
     // Only the interactive window may ask for notification permission.
@@ -498,9 +507,45 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
     }
   }
 
+  @objc private func downloadVerifiedUpdate() {
+    if let downloadedUpdate {
+      NSWorkspace.shared.activateFileViewerSelecting([downloadedUpdate])
+      return
+    }
+    guard let version = pendingUpdate else { return }
+    downloadUpdateButton.isEnabled = false
+    UpdateChecker.downloadVerifiedUpdate(version: version) { [weak self] message in
+      self?.updateStatusLabel.stringValue = message
+      self?.updateStatusLabel.textColor = .tertiaryLabelColor
+    } completion: { [weak self] result in
+      guard let self else { return }
+      self.downloadUpdateButton.isEnabled = true
+      switch result {
+      case .success(let url):
+        self.downloadedUpdate = url
+        self.downloadUpdateButton.title = "Finder에서 보기"
+        self.updateStatusLabel.stringValue =
+          "서명·체크섬 검증 완료. 다운로드 폴더에 저장했습니다. 설치는 직접 하세요."
+        self.updateStatusLabel.textColor = .systemGreen
+      case .failure(let error):
+        self.updateStatusLabel.stringValue = error.localizedDescription
+        self.updateStatusLabel.textColor = .systemRed
+      }
+      NSAccessibility.post(element: self.updateStatusLabel, notification: .valueChanged)
+    }
+  }
+
   @objc private func openReleasePage() {
     // The release page is compiled in. Nothing from the network can change it.
     NSWorkspace.shared.open(UpdateChecker.releasePageURL)
+  }
+
+  func checkForUpdatesNow() {
+    guard UpdateChecker.isEnabled else { return }
+    updateStatusLabel.stringValue = "새 버전을 확인하는 중…"
+    UpdateChecker.checkNow { [weak self] outcome in
+      self?.presentUpdateOutcome(outcome)
+    }
   }
 
   func checkForUpdatesIfDue() {
@@ -513,18 +558,26 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
     // Turning the option off cannot retract a request already sent, but a late
     // callback must not restore update UI after the user disabled the feature.
     guard updateToggle.state == .on, UpdateChecker.isEnabled else { return }
+    guard downloadedUpdate == nil else { return }
     switch outcome {
     case .updateAvailable(let latest):
       updateStatusLabel.stringValue = "새 버전 \(latest)이(가) 나왔습니다."
       updateStatusLabel.textColor = .controlAccentColor
+      pendingUpdate = latest
+      downloadedUpdate = nil
+      downloadUpdateButton.title = "검증된 DMG 받기…"
+      downloadUpdateButton.isHidden = false
       openReleaseButton.isHidden = false
     case .upToDate(let current):
       updateStatusLabel.stringValue = "최신 버전입니다 (\(current))."
       updateStatusLabel.textColor = .tertiaryLabelColor
+      pendingUpdate = nil
+      downloadUpdateButton.isHidden = true
       openReleaseButton.isHidden = true
     case .failed:
       updateStatusLabel.stringValue = "새 버전을 확인하지 못했습니다."
       updateStatusLabel.textColor = .tertiaryLabelColor
+      downloadUpdateButton.isHidden = true
       openReleaseButton.isHidden = true
     }
     NSAccessibility.post(element: updateStatusLabel, notification: .valueChanged)
@@ -1299,6 +1352,93 @@ private final class BoundedUpdateSessionDelegate: NSObject, URLSessionDataDelega
   }
 }
 
+/// Downloads one release asset with a hard byte ceiling.
+///
+/// Redirects are allowed here, unlike the metadata request: GitHub serves release
+/// assets from a separate object host. That is safe only because nothing about
+/// this transfer is trusted until the Ed25519 signature and the SHA-256 in the
+/// signed manifest have both matched. Redirect targets must still be HTTPS.
+private final class BoundedAssetDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+  typealias Completion = @Sendable (Data?) -> Void
+
+  private let maximumByteCount: Int
+  private let sink: FileHandle?
+  private let completion: Completion
+  private var buffer = Data()
+  private var receivedByteCount = 0
+  private var remainingRedirects = 3
+  private var failed = false
+
+  init(maximumByteCount: Int, sink: FileHandle?, completion: @escaping Completion) {
+    self.maximumByteCount = maximumByteCount
+    self.sink = sink
+    self.completion = completion
+  }
+
+  func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    willPerformHTTPRedirection response: HTTPURLResponse,
+    newRequest request: URLRequest,
+    completionHandler: @escaping (URLRequest?) -> Void
+  ) {
+    guard remainingRedirects > 0, request.url?.scheme == "https" else {
+      failed = true
+      completionHandler(nil)
+      return
+    }
+    remainingRedirects -= 1
+    completionHandler(request)
+  }
+
+  func urlSession(
+    _ session: URLSession,
+    dataTask: URLSessionDataTask,
+    didReceive response: URLResponse,
+    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+  ) {
+    guard let response = response as? HTTPURLResponse,
+      response.statusCode == 200,
+      response.expectedContentLength <= Int64(maximumByteCount)
+        || response.expectedContentLength == NSURLSessionTransferSizeUnknown
+    else {
+      failed = true
+      completionHandler(.cancel)
+      return
+    }
+    completionHandler(.allow)
+  }
+
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+    guard !failed, data.count <= maximumByteCount - receivedByteCount else {
+      failed = true
+      dataTask.cancel()
+      return
+    }
+    receivedByteCount += data.count
+    if let sink {
+      do {
+        try sink.write(contentsOf: data)
+      } catch {
+        failed = true
+        dataTask.cancel()
+      }
+    } else {
+      buffer.append(data)
+    }
+  }
+
+  func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    didCompleteWithError error: Error?
+  ) {
+    let succeeded = !failed && error == nil
+    session.finishTasksAndInvalidate()
+    completion(succeeded ? (sink == nil ? buffer : Data()) : nil)
+  }
+}
+
 /// Runs a completion exactly once, whichever of the network result or the
 /// background deadline arrives first.
 @MainActor
@@ -1359,6 +1499,197 @@ private enum UpdateChecker {
   }
 
   static let updateNotificationCategory = "kr.metashield.app.update"
+
+  enum DownloadFailure: LocalizedError {
+    case network
+    case signature
+    case manifest
+    case contents
+    case storage(String)
+
+    var errorDescription: String? {
+      switch self {
+      case .network: return "업데이트 파일을 받지 못했습니다."
+      case .signature: return "서명 검증에 실패했습니다. 이 파일은 설치하지 마세요."
+      case .manifest: return "업데이트 정보가 올바르지 않습니다."
+      case .contents: return "받은 파일의 체크섬이 서명된 값과 다릅니다. 설치하지 마세요."
+      case .storage(let reason): return "다운로드 폴더에 저장하지 못했습니다: \(reason)"
+      }
+    }
+  }
+
+  /// Ed25519 keys that may sign a release manifest. The private half never
+  /// touches this machine outside a release, and never touches GitHub. A second
+  /// key can be added here ahead of a rotation so older copies keep verifying.
+  nonisolated private static let manifestPublicKeys: [Data] = [
+    "qZVZ0St3YMtN6eL5kZroDGtJ6NpUXC23ge5REIG/n6s="
+  ].compactMap { Data(base64Encoded: $0) }
+
+  nonisolated private static let releaseAssetRoot =
+    "https://github.com/assff1123/metashield/releases/download"
+
+  /// Every asset address is derived from the version the app already validated.
+  /// Nothing in a downloaded file can influence which address is contacted.
+  nonisolated private static func assetURL(version: ReleaseVersion, name: String) -> URL? {
+    URL(string: "\(releaseAssetRoot)/v\(version)/\(name)")
+  }
+
+  /// Fetches the signed manifest, verifies it, downloads the disk image, and
+  /// only then hands the user a file. The app never installs it.
+  static func downloadVerifiedUpdate(
+    version: ReleaseVersion,
+    progress: @escaping @MainActor (String) -> Void,
+    completion: @escaping @MainActor (Result<URL, Error>) -> Void
+  ) {
+    guard let manifestURL = assetURL(version: version, name: "metashield-update.json"),
+      let signatureURL = assetURL(version: version, name: "metashield-update.json.sig")
+    else {
+      completion(.failure(DownloadFailure.manifest))
+      return
+    }
+
+    progress("업데이트 정보를 확인하는 중…")
+    fetchAsset(from: manifestURL, maximumByteCount: UpdateManifest.maximumManifestByteCount) {
+      manifestData in
+      Task { @MainActor in
+        guard let manifestData else {
+          completion(.failure(DownloadFailure.network))
+          return
+        }
+        fetchAsset(
+          from: signatureURL, maximumByteCount: UpdateManifest.maximumSignatureByteCount
+        ) { signatureData in
+          Task { @MainActor in
+            guard let signatureData,
+              let signatureText = String(data: signatureData, encoding: .utf8),
+              let signature = Data(
+                base64Encoded: signatureText.trimmingCharacters(in: .whitespacesAndNewlines))
+            else {
+              completion(.failure(DownloadFailure.network))
+              return
+            }
+            // Verify before parsing: untrusted bytes never reach the JSON reader.
+            guard
+              UpdateSignature.isValid(
+                signature, of: manifestData, publicKeys: manifestPublicKeys)
+            else {
+              completion(.failure(DownloadFailure.signature))
+              return
+            }
+            guard let manifest = UpdateManifest(json: manifestData, expectedVersion: version)
+            else {
+              completion(.failure(DownloadFailure.manifest))
+              return
+            }
+            downloadDiskImage(manifest: manifest, progress: progress, completion: completion)
+          }
+        }
+      }
+    }
+  }
+
+  private static func downloadDiskImage(
+    manifest: UpdateManifest,
+    progress: @escaping @MainActor (String) -> Void,
+    completion: @escaping @MainActor (Result<URL, Error>) -> Void
+  ) {
+    guard let assetURL = assetURL(version: manifest.version, name: manifest.diskImageName) else {
+      completion(.failure(DownloadFailure.manifest))
+      return
+    }
+    let temporaryURL: URL
+    let handle: FileHandle
+    do {
+      (temporaryURL, handle) = try makeDownloadFile(for: manifest)
+    } catch {
+      completion(.failure(DownloadFailure.storage(error.localizedDescription)))
+      return
+    }
+
+    progress("검증된 DMG를 받는 중… (\(manifest.byteCount / 1_048_576) MB)")
+    fetchAsset(from: assetURL, maximumByteCount: manifest.byteCount, sink: handle) { _ in
+      Task { @MainActor in
+        try? handle.close()
+        do {
+          let finalURL = try finishDownload(temporaryURL: temporaryURL, manifest: manifest)
+          completion(.success(finalURL))
+        } catch {
+          try? FileManager.default.removeItem(at: temporaryURL)
+          completion(.failure(error))
+        }
+      }
+    }
+  }
+
+  private static func makeDownloadFile(for manifest: UpdateManifest) throws -> (URL, FileHandle) {
+    let directory =
+      FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+      ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let temporaryURL = directory.appendingPathComponent(
+      ".\(manifest.diskImageName).\(UUID().uuidString).part")
+    let descriptor = temporaryURL.path.withCString {
+      open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o644)
+    }
+    guard descriptor >= 0 else {
+      throw DownloadFailure.storage(String(cString: strerror(errno)))
+    }
+    return (temporaryURL, FileHandle(fileDescriptor: descriptor, closeOnDealloc: true))
+  }
+
+  private static func finishDownload(temporaryURL: URL, manifest: UpdateManifest) throws -> URL {
+    let attributes = try FileManager.default.attributesOfItem(atPath: temporaryURL.path)
+    guard (attributes[.size] as? NSNumber)?.intValue == manifest.byteCount else {
+      throw DownloadFailure.contents
+    }
+    let digest = try FileDigest.sha256(ofFileAt: temporaryURL)
+    guard FileDigest.matches(digest, manifest.sha256) else {
+      throw DownloadFailure.contents
+    }
+
+    let directory = temporaryURL.deletingLastPathComponent()
+    var destination = directory.appendingPathComponent(manifest.diskImageName)
+    var index = 2
+    while FileManager.default.fileExists(atPath: destination.path) {
+      destination = directory.appendingPathComponent(
+        "MetaShield-\(manifest.version)-direct-\(index).dmg")
+      index += 1
+    }
+    try FileManager.default.moveItem(at: temporaryURL, to: destination)
+    markAsDownloaded(destination)
+    return destination
+  }
+
+  /// Keeps the same first-run experience as a browser download. Without this the
+  /// app would hand the user a file that skips Gatekeeper's first-launch check.
+  private static func markAsDownloaded(_ url: URL) {
+    let value = "0083;\(String(format: "%08x", UInt32(Date().timeIntervalSince1970)));MetaShield;"
+    _ = value.withCString { bytes in
+      url.path.withCString { path in
+        setxattr(path, "com.apple.quarantine", bytes, strlen(bytes), 0, 0)
+      }
+    }
+  }
+
+  nonisolated private static func fetchAsset(
+    from url: URL,
+    maximumByteCount: Int,
+    sink: FileHandle? = nil,
+    completion: @escaping @Sendable (Data?) -> Void
+  ) {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.httpCookieAcceptPolicy = .never
+    configuration.httpShouldSetCookies = false
+    configuration.urlCache = nil
+    configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+    configuration.timeoutIntervalForRequest = 30
+    configuration.timeoutIntervalForResource = 300
+    configuration.httpAdditionalHeaders = ["User-Agent": "MetaShield (verified update download)"]
+    let delegate = BoundedAssetDelegate(
+      maximumByteCount: maximumByteCount, sink: sink, completion: completion)
+    let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+    session.dataTask(with: URLRequest(url: url)).resume()
+  }
 
   /// Notification APIs require a real bundle. A plain `swift run` binary has none.
   private static var canUseNotifications: Bool {

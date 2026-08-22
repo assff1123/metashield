@@ -19,6 +19,7 @@ let package = Package(
       linkerSettings: [
         .linkedFramework("Accelerate"),
         .linkedFramework("CoreGraphics"),
+        .linkedFramework("CryptoKit"),
         .linkedFramework("ImageIO"),
         .linkedLibrary("z"),
       ]

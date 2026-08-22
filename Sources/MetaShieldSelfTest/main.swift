@@ -1,4 +1,5 @@
 import CoreGraphics
+import CryptoKit
 import Foundation
 import ImageIO
 import MetaShieldCore
@@ -329,6 +330,97 @@ private func testReleaseTagParsing() throws {
     ReleaseVersion(tag: "v0.3.3")! == ReleaseVersion(tag: "0.3.3")!, "같은 버전을 다르게 봤습니다.")
 }
 
+/// A signed manifest is the only thing standing between a compromised release
+/// host and a user installing an attacker's disk image, so every field is
+/// checked and anything unexpected is rejected outright.
+private func testUpdateManifestValidation() throws {
+  let expected = ReleaseVersion(tag: "0.3.7")!
+  let validDigest = String(repeating: "ab", count: 32)
+
+  func manifest(_ overrides: [String: Any]) -> Data {
+    var payload: [String: Any] = [
+      "schema": 1,
+      "version": "0.3.7",
+      "dmgName": "MetaShield-0.3.7-direct.dmg",
+      "sha256": validDigest,
+      "size": 1_234,
+    ]
+    for (key, value) in overrides { payload[key] = value }
+    return (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data()
+  }
+
+  let accepted = UpdateManifest(json: manifest([:]), expectedVersion: expected)
+  try expect(accepted != nil, "정상 manifest 를 거부했습니다.")
+  try expect(accepted?.byteCount == 1_234, "크기를 잘못 읽었습니다.")
+  try expect(accepted?.sha256.count == 32, "SHA-256 을 32바이트로 읽지 못했습니다.")
+
+  let rejected: [(String, Data)] = [
+    ("스키마 불일치", manifest(["schema": 2])),
+    ("태그와 다른 버전", manifest(["version": "0.3.8", "dmgName": "MetaShield-0.3.8-direct.dmg"])),
+    ("파일명 불일치", manifest(["dmgName": "MetaShield-0.3.7.dmg"])),
+    ("경로가 섞인 파일명", manifest(["dmgName": "../MetaShield-0.3.7-direct.dmg"])),
+    ("대문자 다이제스트", manifest(["sha256": validDigest.uppercased()])),
+    ("짧은 다이제스트", manifest(["sha256": String(repeating: "ab", count: 31)])),
+    ("16진수가 아닌 다이제스트", manifest(["sha256": String(repeating: "zz", count: 32)])),
+    ("크기 0", manifest(["size": 0])),
+    ("크기 상한 초과", manifest(["size": UpdateManifest.maximumDiskImageByteCount + 1])),
+    ("크기가 문자열", manifest(["size": "1234"])),
+    ("빈 본문", Data()),
+    ("JSON 이 아님", Data("not json".utf8)),
+  ]
+  for (name, data) in rejected {
+    try expect(
+      UpdateManifest(json: data, expectedVersion: expected) == nil,
+      "잘못된 manifest 를 통과시켰습니다: \(name)")
+  }
+}
+
+private func testUpdateSignatureVerification() throws {
+  let key = Curve25519.Signing.PrivateKey()
+  let otherKey = Curve25519.Signing.PrivateKey()
+  let payload = Data("{\"schema\":1}".utf8)
+  let signature = Data(try key.signature(for: payload))
+  let publicKey = key.publicKey.rawRepresentation
+
+  try expect(
+    UpdateSignature.isValid(signature, of: payload, publicKeys: [publicKey]),
+    "정상 서명을 거부했습니다.")
+  try expect(
+    UpdateSignature.isValid(
+      signature, of: payload, publicKeys: [otherKey.publicKey.rawRepresentation, publicKey]),
+    "키 목록의 두 번째 키로 검증하지 못했습니다.")
+  try expect(
+    !UpdateSignature.isValid(
+      signature, of: payload, publicKeys: [otherKey.publicKey.rawRepresentation]),
+    "다른 키로 서명 검증이 통과했습니다.")
+  try expect(
+    !UpdateSignature.isValid(signature, of: Data("{\"schema\":2}".utf8), publicKeys: [publicKey]),
+    "변조된 본문의 서명이 통과했습니다.")
+  try expect(
+    !UpdateSignature.isValid(signature.dropLast(), of: payload, publicKeys: [publicKey]),
+    "잘린 서명이 통과했습니다.")
+  try expect(
+    !UpdateSignature.isValid(signature, of: payload, publicKeys: []),
+    "키가 없는데 검증이 통과했습니다.")
+}
+
+private func testDownloadDigestCheck() throws {
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let file = directory.appendingPathComponent("payload.bin")
+  let contents = Data((0..<(3 * 1_024 * 1_024)).map { UInt8($0 % 251) })
+  try contents.write(to: file)
+
+  let digest = try FileDigest.sha256(ofFileAt: file)
+  try expect(
+    FileDigest.matches(digest, Data(SHA256.hash(data: contents))),
+    "스트리밍 SHA-256 이 한 번에 계산한 값과 다릅니다.")
+  try expect(
+    !FileDigest.matches(digest, Data(SHA256.hash(data: contents + Data([0])))),
+    "다른 내용의 다이제스트가 일치로 판정됐습니다.")
+  try expect(!FileDigest.matches(digest, digest.dropLast()), "길이가 다른데 일치로 판정됐습니다.")
+}
+
 private func testFilePermissionsArePreserved() throws {
   let directory = try makeTemporaryDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
@@ -631,6 +723,9 @@ let tests: [(String, () throws -> Void)] = [
   ("PNG 메타데이터·알파·xattr 제거", testAggressiveSanitization),
   ("알파 하위 비트 은닉 payload 제거", testAlphaLowBitPayloadIsDestroyed),
   ("릴리스 태그 해석·비교", testReleaseTagParsing),
+  ("업데이트 manifest 검증", testUpdateManifestValidation),
+  ("업데이트 서명 검증", testUpdateSignatureVerification),
+  ("다운로드 체크섬 검증", testDownloadDigestCheck),
   ("원본 파일 접근 권한 보존", testFilePermissionsArePreserved),
   ("실패 시 원본 보존", testCorruptInputIsUntouched),
   ("JPEG에서 깨끗한 PNG 사본 생성", testJPEGExport),

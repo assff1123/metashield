@@ -16,18 +16,49 @@ Apple Developer Program 가입과 결제는 이 배포 방식에 필요하지 �
 
 ```sh
 ./scripts/package-direct-dmg.sh
-./scripts/verify-direct-dmg.sh outputs/MetaShield-0.3.5-direct.dmg
+./scripts/verify-direct-dmg.sh outputs/MetaShield-<버전>-direct.dmg
 ```
 
 첫 스크립트는 자체 테스트, warnings-as-errors Universal 2 빌드, 중첩 ad-hoc 서명,
 DMG 무결성 검사와 SHA-256 생성을 수행합니다. 결과는 다음 두 파일입니다.
 
-- `outputs/MetaShield-0.3.5-direct.dmg`
-- `outputs/MetaShield-0.3.5-direct.dmg.sha256`
+- `outputs/MetaShield-<버전>-direct.dmg`
+- `outputs/MetaShield-<버전>-direct.dmg.sha256`
 
 두 번째 스크립트는 DMG 구조, 앱·CLI·공유 확장의 서명 무결성, arm64/x86_64,
 plist, 자체 테스트를 검사합니다. 격리 속성을 붙인 앱이 Gatekeeper에서 차단되는 것도
 예상된 결과로 확인합니다.
+
+## 2.1 업데이트 manifest 서명
+
+앱의 '검증된 DMG 받기'는 서명된 manifest 없이는 동작하지 않습니다. 개인키를 꽂고
+다음을 실행합니다.
+
+```sh
+swift scripts/sign-update-manifest.swift \
+    outputs/MetaShield-<버전>-direct.dmg <개인키 경로> outputs
+```
+
+`outputs/metashield-update.json` 과 `.sig` 가 만들어지고, 스크립트가 자체적으로 서명을
+다시 검증합니다. 개인키는 GitHub Secrets나 이 Mac에 상시 보관하지 않습니다. 암호화된
+저장 장치 두 개에 백업해 두고 릴리스할 때만 연결합니다. 키를 잃으면 이미 설치된 앱이
+새 manifest를 검증할 방법이 없습니다.
+
+키를 교체할 때는 새 공개키를 앱의 `manifestPublicKeys` 에 **추가**한 버전을 먼저 배포하고,
+사용자 대부분이 그 버전으로 올라간 뒤에 옛 키를 제거합니다.
+
+## 2.2 릴리스에 올릴 파일 네 개
+
+```text
+MetaShield-<버전>-direct.dmg
+MetaShield-<버전>-direct.dmg.sha256
+metashield-update.json
+metashield-update.json.sig
+```
+
+이 저장소는 immutable release가 켜져 있어 게시 뒤에는 자산을 바꿀 수 없습니다. 네 개를
+한 번에 첨부해 게시하고, 잘못 올렸으면 버전을 올려 새로 배포합니다. `v*` 태그는 ruleset으로
+삭제·이동이 막혀 있습니다.
 
 ## 3. 배포
 
@@ -46,7 +77,7 @@ DMG와 일치하는 `.sha256`만 같은 HTTPS 다운로드 페이지에 올립�
 
 ## 3.2 릴리스 태그 규칙
 
-앱의 새 버전 확인은 GitHub 릴리스의 `tag_name` 만 읽고, `v0.3.5` 처럼 `v` + 숫자 세 자리
+앱의 새 버전 확인은 GitHub 릴리스의 `tag_name` 만 읽고, `v0.4.0` 처럼 `v` + 숫자 세 자리
 형식이 아니면 무시합니다. 태그를 다른 형식으로 만들면 사용자에게 알림이 가지 않습니다.
 릴리스는 초안이 아닌 정식 상태여야 `releases/latest` 에 노출됩니다.
 
@@ -102,7 +133,7 @@ METASHIELD_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 METASHIELD_NOTARY_PROFILE="metashield-notary" \
 ./scripts/sign-and-notarize.sh
 
-./scripts/verify-release.sh outputs/MetaShield-0.3.5.dmg
+./scripts/verify-release.sh outputs/MetaShield-<버전>.dmg
 ```
 
 이 경로는 Developer ID 서명, Apple 공증, ticket stapling과 Gatekeeper 승인을 검사합니다.
