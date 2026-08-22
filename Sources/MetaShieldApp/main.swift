@@ -39,7 +39,7 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
 
     let controller = MainViewController()
     let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 620, height: 440),
+      contentRect: NSRect(x: 0, y: 0, width: 620, height: 500),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
       backing: .buffered,
       defer: false
@@ -48,7 +48,7 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     self.controller = controller
     self.window = window
     window.title = "MetaShield"
-    window.minSize = NSSize(width: 540, height: 380)
+    window.minSize = NSSize(width: 540, height: 440)
     window.center()
 
     serviceProvider = ImageServiceProvider(applicationDelegate: self)
@@ -147,6 +147,9 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     NSApp.setActivationPolicy(.regular)
     window?.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
+    // Headless Finder, Services, and Photos requests never reach this path, so
+    // they never touch the network.
+    controller?.checkForUpdatesIfDue()
   }
 
   private func finishSilentRequest() {
@@ -313,6 +316,10 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
   private let installQuickActionButton = NSButton(
     title: "Finder 빠른 동작 설치/복구", target: nil, action: nil)
   private let spinner = NSProgressIndicator()
+  private let updateToggle = NSButton(
+    checkboxWithTitle: "새 버전 확인 (GitHub)", target: nil, action: nil)
+  private let updateStatusLabel = NSTextField(labelWithString: "")
+  private let openReleaseButton = NSButton(title: "새 버전 받기…", target: nil, action: nil)
   private var isProcessing = false
   private var isSilentProcessing = false
   private var processingCompletion: ((Bool) -> Void)?
@@ -353,6 +360,23 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
     spinner.controlSize = .small
     spinner.isDisplayedWhenStopped = false
 
+    updateToggle.target = self
+    updateToggle.action = #selector(toggleUpdateCheck)
+    updateToggle.state = UpdateChecker.isEnabled ? .on : .off
+    updateToggle.setAccessibilityHelp(
+      "켜면 하루에 한 번 GitHub 릴리스에서 새 버전 번호만 확인합니다. 앱이 직접 내려받거나 설치하지 않습니다.")
+
+    updateStatusLabel.font = .systemFont(ofSize: 11)
+    updateStatusLabel.textColor = .tertiaryLabelColor
+    updateStatusLabel.alignment = .center
+    updateStatusLabel.setAccessibilityLabel("업데이트 확인 상태")
+
+    openReleaseButton.target = self
+    openReleaseButton.action = #selector(openReleasePage)
+    openReleaseButton.bezelStyle = .rounded
+    openReleaseButton.isHidden = true
+    openReleaseButton.setAccessibilityHelp("기본 브라우저에서 MetaShield 릴리스 페이지를 엽니다.")
+
     dropZone.onFileURLs = { [weak self] urls in
       self?.receiveFileURLs(urls)
     }
@@ -373,7 +397,14 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
     buttonRow.spacing = 10
     buttonRow.alignment = .centerY
 
-    let stack = NSStackView(views: [titleLabel, subtitleLabel, dropZone, statusRow, buttonRow])
+    let updateRow = NSStackView(views: [updateToggle, openReleaseButton])
+    updateRow.orientation = .horizontal
+    updateRow.spacing = 10
+    updateRow.alignment = .centerY
+
+    let stack = NSStackView(views: [
+      titleLabel, subtitleLabel, dropZone, statusRow, buttonRow, updateRow, updateStatusLabel,
+    ])
     stack.orientation = .vertical
     stack.alignment = .centerX
     stack.spacing = 14
@@ -391,6 +422,8 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
       dropZone.heightAnchor.constraint(equalToConstant: 190),
       statusRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
       statusLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor, constant: -28),
+      updateRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
+      updateStatusLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
     ])
   }
 
@@ -405,6 +438,49 @@ private final class MainViewController: NSViewController, @unchecked Sendable {
     if panel.runModal() == .OK {
       receiveFileURLs(panel.urls)
     }
+  }
+
+  @objc private func toggleUpdateCheck() {
+    let isEnabled = updateToggle.state == .on
+    UpdateChecker.isEnabled = isEnabled
+    guard isEnabled else {
+      updateStatusLabel.stringValue = ""
+      openReleaseButton.isHidden = true
+      return
+    }
+    updateStatusLabel.stringValue = "새 버전을 확인하는 중…"
+    UpdateChecker.check { [weak self] outcome in
+      self?.presentUpdateOutcome(outcome)
+    }
+  }
+
+  @objc private func openReleasePage() {
+    // The release page is compiled in. Nothing from the network can change it.
+    NSWorkspace.shared.open(UpdateChecker.releasePageURL)
+  }
+
+  func checkForUpdatesIfDue() {
+    UpdateChecker.checkIfDue { [weak self] outcome in
+      self?.presentUpdateOutcome(outcome)
+    }
+  }
+
+  private func presentUpdateOutcome(_ outcome: UpdateChecker.Outcome) {
+    switch outcome {
+    case .updateAvailable(let latest):
+      updateStatusLabel.stringValue = "새 버전 \(latest)이(가) 나왔습니다."
+      updateStatusLabel.textColor = .controlAccentColor
+      openReleaseButton.isHidden = false
+    case .upToDate(let current):
+      updateStatusLabel.stringValue = "최신 버전입니다 (\(current))."
+      updateStatusLabel.textColor = .tertiaryLabelColor
+      openReleaseButton.isHidden = true
+    case .failed:
+      updateStatusLabel.stringValue = "새 버전을 확인하지 못했습니다."
+      updateStatusLabel.textColor = .tertiaryLabelColor
+      openReleaseButton.isHidden = true
+    }
+    NSAccessibility.post(element: updateStatusLabel, notification: .valueChanged)
   }
 
   @objc private func installQuickAction() {
@@ -1093,5 +1169,107 @@ private final class DropZoneView: NSView {
     pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
       || pasteboard.canReadObject(forClasses: [NSFilePromiseReceiver.self])
       || pasteboard.availableType(from: [.png, .tiff]) != nil
+  }
+}
+
+/// Opt-in release check.
+///
+/// Design constraints, in order of importance:
+///
+/// - The app never downloads or installs an update. MetaShield is ad-hoc signed,
+///   so a downloaded bundle cannot be tied to a developer identity and replacing
+///   the installed app from the network would be an unverifiable code path.
+/// - Every URL is compiled in. The response is only read for `tag_name`, and even
+///   that is rejected unless it is a plain `major.minor.patch` string.
+/// - The check is off until the user turns it on, runs at most once a day, and
+///   never runs for headless Finder, Services, or Photos requests.
+@MainActor
+private enum UpdateChecker {
+  enum Outcome {
+    case upToDate(current: ReleaseVersion)
+    case updateAvailable(latest: ReleaseVersion)
+    case failed
+  }
+
+  static let releasePageURL = URL(string: "https://github.com/assff1123/metashield/releases/latest")!
+
+  private static let feedURL = URL(
+    string: "https://api.github.com/repos/assff1123/metashield/releases/latest")!
+  private static let enabledKey = "kr.metashield.app.updateCheckEnabled"
+  private static let lastCheckKey = "kr.metashield.app.lastUpdateCheck"
+  private static let checkInterval: TimeInterval = 24 * 60 * 60
+  nonisolated private static let maximumResponseByteCount = 512 * 1_024
+
+  static var isEnabled: Bool {
+    get { UserDefaults.standard.bool(forKey: enabledKey) }
+    set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
+  }
+
+  static var currentVersion: ReleaseVersion? {
+    guard
+      let string = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    else { return nil }
+    return ReleaseVersion(tag: string)
+  }
+
+  /// Runs a check only if the user enabled it and a day has passed.
+  static func checkIfDue(completion: @escaping @MainActor (Outcome) -> Void) {
+    guard isEnabled else { return }
+    let now = Date()
+    let last = UserDefaults.standard.object(forKey: lastCheckKey) as? Date
+    if let last, now.timeIntervalSince(last) < checkInterval, now >= last {
+      return
+    }
+    check(completion: completion)
+  }
+
+  static func check(completion: @escaping @MainActor (Outcome) -> Void) {
+    guard let current = currentVersion else {
+      completion(.failed)
+      return
+    }
+    UserDefaults.standard.set(Date(), forKey: lastCheckKey)
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.httpCookieAcceptPolicy = .never
+    configuration.httpShouldSetCookies = false
+    configuration.urlCache = nil
+    configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+    configuration.timeoutIntervalForRequest = 10
+    configuration.timeoutIntervalForResource = 20
+    configuration.httpAdditionalHeaders = [
+      "Accept": "application/vnd.github+json",
+      "User-Agent": "MetaShield/\(current) (update check)",
+    ]
+    let session = URLSession(configuration: configuration)
+
+    var request = URLRequest(url: feedURL)
+    request.httpMethod = "GET"
+    session.dataTask(with: request) { data, response, _ in
+      let latest = parseLatestVersion(data: data, response: response)
+      Task { @MainActor in
+        session.finishTasksAndInvalidate()
+        guard let latest else {
+          completion(.failed)
+          return
+        }
+        completion(latest > current ? .updateAvailable(latest: latest) : .upToDate(current: current))
+      }
+    }.resume()
+  }
+
+  nonisolated private static func parseLatestVersion(data: Data?, response: URLResponse?)
+    -> ReleaseVersion?
+  {
+    guard let httpResponse = response as? HTTPURLResponse,
+      httpResponse.statusCode == 200,
+      let data,
+      data.count <= maximumResponseByteCount,
+      let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let tag = payload["tag_name"] as? String
+    else {
+      return nil
+    }
+    return ReleaseVersion(tag: tag)
   }
 }

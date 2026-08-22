@@ -32,6 +32,22 @@ Arbitrary steganography embedded in visible RGB pixels is outside this guarantee
 Claiming to remove every possible hidden message while preserving an image would be
 misleading. MetaShield does remove the known NovelAI container and alpha-channel paths.
 
+## Update check
+
+MetaShield never downloads or installs an update. The app is ad-hoc signed, so a
+bundle fetched at runtime could not be tied to a developer identity, and replacing
+the installed app from the network would be an unverifiable code path.
+
+The optional check, off until the user enables it in the app window:
+
+- runs only on an interactive launch, at most once every 24 hours;
+- requests one compiled-in URL and reads exactly one field, `tag_name`, which is
+  discarded unless it is a plain `major.minor.patch` number;
+- never takes a URL from the response — the release page it opens is compiled in;
+- shows a line of text and a button that opens that page in the default browser.
+
+Headless Finder, Services, and Photos requests never reach this path.
+
 ## Input behavior
 
 - Local PNG: canonicalized and atomically replaced after verification, without an

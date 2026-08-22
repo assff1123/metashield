@@ -16,14 +16,14 @@ Apple Developer Program 가입과 결제는 이 배포 방식에 필요하지 �
 
 ```sh
 ./scripts/package-direct-dmg.sh
-./scripts/verify-direct-dmg.sh outputs/MetaShield-0.3.2-direct.dmg
+./scripts/verify-direct-dmg.sh outputs/MetaShield-0.3.3-direct.dmg
 ```
 
 첫 스크립트는 자체 테스트, warnings-as-errors Universal 2 빌드, 중첩 ad-hoc 서명,
 DMG 무결성 검사와 SHA-256 생성을 수행합니다. 결과는 다음 두 파일입니다.
 
-- `outputs/MetaShield-0.3.2-direct.dmg`
-- `outputs/MetaShield-0.3.2-direct.dmg.sha256`
+- `outputs/MetaShield-0.3.3-direct.dmg`
+- `outputs/MetaShield-0.3.3-direct.dmg.sha256`
 
 두 번째 스크립트는 DMG 구조, 앱·CLI·공유 확장의 서명 무결성, arm64/x86_64,
 plist, 자체 테스트를 검사합니다. 격리 속성을 붙인 앱이 Gatekeeper에서 차단되는 것도
@@ -43,6 +43,12 @@ DMG와 일치하는 `.sha256`만 같은 HTTPS 다운로드 페이지에 올립�
 - 큰 이미지(40 MP 상한)는 처리 중 1 GB 이상의 메모리를 쓸 수 있습니다.
 - `open -a MetaShield <파일>` 또는 서비스 메뉴로 호출하면 창 없이 즉시 처리됩니다.
   Finder 빠른 동작을 위한 의도된 동작이지만, 실행 즉시 원본이 바뀐다는 점을 명시합니다.
+
+## 3.2 릴리스 태그 규칙
+
+앱의 새 버전 확인은 GitHub 릴리스의 `tag_name` 만 읽고, `v0.3.3` 처럼 `v` + 숫자 세 자리
+형식이 아니면 무시합니다. 태그를 다른 형식으로 만들면 사용자에게 알림이 가지 않습니다.
+릴리스는 초안이 아닌 정식 상태여야 `releases/latest` 에 노출됩니다.
 
 ## 4. 사용자 설치 안내
 
@@ -96,7 +102,7 @@ METASHIELD_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 METASHIELD_NOTARY_PROFILE="metashield-notary" \
 ./scripts/sign-and-notarize.sh
 
-./scripts/verify-release.sh outputs/MetaShield-0.3.2.dmg
+./scripts/verify-release.sh outputs/MetaShield-0.3.3.dmg
 ```
 
 이 경로는 Developer ID 서명, Apple 공증, ticket stapling과 Gatekeeper 승인을 검사합니다.
