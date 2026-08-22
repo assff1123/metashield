@@ -324,7 +324,7 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
           destinationDirectory: temporaryDirectory
         )
         let baseName = URL(fileURLWithPath: item.name).deletingPathExtension().lastPathComponent
-        let destination = uniqueOutputURL(in: temporaryDirectory, baseName: baseName)
+        let destination = OutputNaming.uniqueCleanPNGURL(in: temporaryDirectory, baseName: baseName)
         let report = try sanitizer.writeCanonicalPNG(from: item.url, to: destination)
         try? FileManager.default.removeItem(at: item.url)
         try throwIfCancelled()
@@ -588,17 +588,6 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
     case .failure(let error):
       finishWithError(error)
     }
-  }
-
-  nonisolated private func uniqueOutputURL(in directory: URL, baseName: String) -> URL {
-    let safeBase = baseName.isEmpty ? "Cleaned Image" : baseName
-    var candidate = directory.appendingPathComponent("\(safeBase).clean.png")
-    var index = 2
-    while FileManager.default.fileExists(atPath: candidate.path) {
-      candidate = directory.appendingPathComponent("\(safeBase).clean-\(index).png")
-      index += 1
-    }
-    return candidate
   }
 
   private static func photoLibraryError(_ message: String) -> NSError {

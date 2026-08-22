@@ -1,0 +1,16 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  self-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (warnings as errors)
+        run: swift build -c release -Xswiftc -warnings-as-errors
+      - name: Run self-test suite
+        run: swift run -c release metashield-self-test

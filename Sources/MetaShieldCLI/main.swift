@@ -33,6 +33,11 @@ guard paths.count <= 100 else {
   fputs("실패: 한 번에 최대 100개 이미지까지 처리할 수 있습니다.\n", stderr)
   exit(64)
 }
+if let unknownOption = paths.first(where: { $0.hasPrefix("-") }) {
+  fputs("실패: 알 수 없는 옵션입니다: \(unknownOption)\n\n", stderr)
+  printUsage()
+  exit(64)
+}
 
 var failed = false
 for path in paths {
@@ -46,7 +51,10 @@ for path in paths {
     } else if ImageInputLocationPolicy.shouldImportIntoPhotos(url) {
       throw MetaShieldError.managedLocationNotAllowed
     } else if quickAction, url.pathExtension.lowercased() != "png" {
-      let destination = uniqueOutputURL(for: url)
+      let destination = OutputNaming.uniqueCleanPNGURL(
+        in: url.deletingLastPathComponent(),
+        baseName: url.deletingPathExtension().lastPathComponent
+      )
       let report = try ImageSanitizer.shared.writeCanonicalPNG(from: url, to: destination)
       print("완료: \(path) → \(report.url.path) — \(report.width)×\(report.height)")
     } else {
@@ -62,15 +70,3 @@ for path in paths {
 }
 
 exit(failed ? 1 : 0)
-
-private func uniqueOutputURL(for source: URL) -> URL {
-  let directory = source.deletingLastPathComponent()
-  let baseName = source.deletingPathExtension().lastPathComponent
-  var candidate = directory.appendingPathComponent("\(baseName).clean.png")
-  var index = 2
-  while FileManager.default.fileExists(atPath: candidate.path) {
-    candidate = directory.appendingPathComponent("\(baseName).clean-\(index).png")
-    index += 1
-  }
-  return candidate
-}

@@ -22,7 +22,15 @@ public enum PNGInspector {
     let payloadRange: Range<Int>
   }
 
+  /// Chunk ranges are absolute offsets from the start of the file, so every
+  /// entry point anchors its input at index zero. A `Data` slice keeps its
+  /// parent's indices and would silently shift every range otherwise.
+  private static func rebased(_ data: Data) -> Data {
+    data.startIndex == 0 ? data : Data(data)
+  }
+
   public static func inspect(_ data: Data) throws -> PNGInspection {
+    let data = rebased(data)
     let chunks = try parse(data)
     guard let first = chunks.first, first.type == "IHDR" else {
       throw MetaShieldError.invalidPNG("IHDR이 첫 청크가 아닙니다.")
@@ -49,6 +57,7 @@ public enum PNGInspector {
   }
 
   public static func canonicalData(from encodedPNG: Data) throws -> Data {
+    let encodedPNG = rebased(encodedPNG)
     let chunks = try parse(encodedPNG)
     guard let first = chunks.first, first.type == "IHDR" else {
       throw MetaShieldError.invalidPNG("IHDR이 첫 청크가 아닙니다.")
@@ -77,6 +86,7 @@ public enum PNGInspector {
 
   @discardableResult
   public static func verifyCanonical(_ data: Data) throws -> PNGInspection {
+    let data = rebased(data)
     let chunks = try parse(data)
     let inspection = try inspect(data)
     let types = inspection.chunkTypes
