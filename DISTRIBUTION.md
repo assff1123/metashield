@@ -40,9 +40,25 @@ swift scripts/sign-update-manifest.swift \
 ```
 
 `outputs/metashield-update.json` 과 `.sig` 가 만들어지고, 스크립트가 자체적으로 서명을
-다시 검증합니다. 개인키는 GitHub Secrets나 이 Mac에 상시 보관하지 않습니다. 암호화된
-저장 장치 두 개에 백업해 두고 릴리스할 때만 연결합니다. 키를 잃으면 이미 설치된 앱이
-새 manifest를 검증할 방법이 없습니다.
+다시 검증합니다.
+
+개인키는 GitHub Secrets, 저장소, 평문 파일 어디에도 두지 않습니다. 보관 위치는 암호화된
+스파스 번들 `~/MetaShieldKey.sparsebundle` 이며, 릴리스할 때만 마운트합니다.
+
+```sh
+open ~/MetaShieldKey.sparsebundle        # 비밀번호 입력 → /Volumes/MetaShieldKey 마운트
+swift scripts/sign-update-manifest.swift \
+    outputs/MetaShield-<버전>-direct.dmg /Volumes/MetaShieldKey/metashield-update.key outputs
+hdiutil detach /Volumes/MetaShieldKey    # 서명이 끝나면 바로 언마운트
+```
+
+마운트하지 않은 상태에서는 디스크에 암호화된 덩어리만 남으므로, 파일을 통째로 훔쳐가도
+사용할 수 없습니다. 이미지 비밀번호는 이 Mac 안에 저장하지 않습니다.
+
+**사본을 최소 한 개 다른 장소에 두어야 합니다.** 이 Mac의 디스크가 고장 나면 키가
+사라지고, 이미 설치된 앱은 이후의 manifest를 검증할 수 없습니다. 그 상태를 되돌리려면
+새 공개키를 내장한 버전을 사용자가 수동으로 설치해야 합니다. 사본은 암호화된 상태
+(`.sparsebundle` 통째로)로 USB나 클라우드에 두면 됩니다.
 
 키를 교체할 때는 새 공개키를 앱의 `manifestPublicKeys` 에 **추가**한 버전을 먼저 배포하고,
 사용자 대부분이 그 버전으로 올라간 뒤에 옛 키를 제거합니다.
