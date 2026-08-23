@@ -887,6 +887,206 @@ private func testAVIFRejectsAnimatedInput() throws {
     !FileManager.default.fileExists(atPath: output.path), "실패했는데 출력 파일이 남았습니다.")
 }
 
+private func testAVIFDestroysAlphaLowBitPayload() throws {
+  // The PNG path has this test; the AVIF path shares the pipeline but ships a
+  // different encoder, so the guarantee has to be proven at the AVIF output too.
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let source = directory.appendingPathComponent("payload.png")
+  let secret = Array("SELFTEST-ALPHA-CANARY".utf8)
+  var bits: [UInt8] = []
+  for byte in secret {
+    for shift in (0..<8).reversed() { bits.append((byte >> UInt8(shift)) & 1) }
+  }
+  var index = 0
+  let png = makeAlphaPayloadPNG(width: 64, height: 64) { _ in
+    defer { index += 1 }
+    guard index < bits.count else { return 255 }
+    return 254 | bits[index]
+  }
+  try png.write(to: source)
+
+  let output = directory.appendingPathComponent("out.avif")
+  let sanitizer = ImageSanitizer()
+  do {
+    _ = try sanitizer.writeCanonicalAVIF(from: source, to: output, quality: .high)
+  } catch let error as MetaShieldError where error == .avifEncodingUnavailable {
+    return  // Nothing to prove where the encoder does not exist.
+  }
+
+  let produced = try Data(contentsOf: output)
+  let bytes = Array(produced)
+  let leaked = bytes.indices.contains { start in
+    start + secret.count <= bytes.count && Array(bytes[start..<(start + secret.count)]) == secret
+  }
+  try expect(!leaked, "AVIF 출력에 알파 페이로드 문자열이 남았습니다.")
+
+  // And the decoded image must be fully opaque, so no alpha plane survives.
+  guard let source2 = CGImageSourceCreateWithData(produced as CFData, nil),
+    let image = CGImageSourceCreateImageAtIndex(source2, 0, nil)
+  else { throw SelfTestError.assertion("AVIF 출력을 다시 열지 못했습니다.") }
+  try expect(
+    image.alphaInfo == .none || image.alphaInfo == .noneSkipFirst
+      || image.alphaInfo == .noneSkipLast,
+    "AVIF 출력에 알파 채널이 남았습니다.")
+}
+
+private func testAVIFRespectsResourceLimits() throws {
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let source = directory.appendingPathComponent("in.png")
+  try makeImageData(type: "public.png" as CFString, metadata: false).write(to: source)
+
+  // Byte ceiling.
+  let tinyByteLimit = ImageSanitizer(maximumPixelCount: 40_000_000, maximumInputByteCount: 8)
+  do {
+    _ = try tinyByteLimit.writeCanonicalAVIF(
+      from: source, to: directory.appendingPathComponent("a.avif"), quality: .high)
+    throw SelfTestError.assertion("AVIF 경로가 입력 바이트 상한을 무시했습니다.")
+  } catch let error as MetaShieldError {
+    guard case .inputFileTooLarge = error else { throw error }
+  }
+
+  // Pixel ceiling.
+  let tinyPixelLimit = ImageSanitizer(maximumPixelCount: 1, maximumInputByteCount: 256 * 1_024)
+  do {
+    _ = try tinyPixelLimit.writeCanonicalAVIF(
+      from: source, to: directory.appendingPathComponent("b.avif"), quality: .high)
+    throw SelfTestError.assertion("AVIF 경로가 픽셀 상한을 무시했습니다.")
+  } catch let error as MetaShieldError {
+    guard case .imageTooLarge = error else { throw error }
+  }
+
+  try expect(
+    !FileManager.default.fileExists(atPath: directory.appendingPathComponent("a.avif").path)
+      && !FileManager.default.fileExists(atPath: directory.appendingPathComponent("b.avif").path),
+    "상한을 넘겼는데 출력 파일이 생겼습니다.")
+}
+
+private func testAVIFRejectsSymbolicLinkInput() throws {
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let real = directory.appendingPathComponent("real.png")
+  try makeImageData(type: "public.png" as CFString, metadata: false).write(to: real)
+  let link = directory.appendingPathComponent("link.png")
+  try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+  do {
+    _ = try ImageSanitizer().writeCanonicalAVIF(
+      from: link, to: directory.appendingPathComponent("out.avif"), quality: .high)
+    throw SelfTestError.assertion("AVIF 경로가 심볼릭 링크 입력을 처리했습니다.")
+  } catch let error as MetaShieldError {
+    try expect(error == .symbolicLinkNotAllowed, "예상과 다른 오류: \(error)")
+  }
+}
+
+private func testMalformedInputNeverProducesAVIF() throws {
+  // Corrupt containers must fail closed on the conversion path too: no output
+  // file, and the input left byte-identical.
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let sanitizer = ImageSanitizer()
+  var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
+  func nextRandom() -> UInt64 {
+    seed ^= seed << 13
+    seed ^= seed >> 7
+    seed ^= seed << 17
+    return seed
+  }
+
+  let clean = try makeImageData(type: "public.png" as CFString, metadata: true)
+  for iteration in 0..<128 {
+    var mutated = Array(clean)
+    let mutations = 1 + Int(nextRandom() % 4)
+    for _ in 0..<mutations {
+      let offset = Int(nextRandom() % UInt64(mutated.count))
+      mutated[offset] = UInt8(nextRandom() % 256)
+    }
+    let input = directory.appendingPathComponent("case-\(iteration).png")
+    let data = Data(mutated)
+    try data.write(to: input)
+    let output = directory.appendingPathComponent("case-\(iteration).avif")
+
+    do {
+      _ = try sanitizer.writeCanonicalAVIF(from: input, to: output, quality: .high)
+      // Success is allowed: a mutation may leave a decodable image. The output
+      // must then still pass verification.
+      _ = try sanitizer.verifyCanonicalAVIF(at: output)
+    } catch {
+      try expect(
+        !FileManager.default.fileExists(atPath: output.path),
+        "실패한 변환이 출력 파일을 남겼습니다: case-\(iteration)")
+    }
+    try expect(
+      (try Data(contentsOf: input)) == data,
+      "변환 경로가 입력을 변경했습니다: case-\(iteration)")
+  }
+}
+
+private func testMalformedAVIFInputCorpusIsSafe() throws {
+  // The PNG corpus test covers PNG inputs. AVIF is also an accepted input type,
+  // so a mutated AVIF container must fail closed the same way: no unverified
+  // output, and the input left byte-identical.
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let sanitizer = ImageSanitizer()
+
+  let seedPNG = directory.appendingPathComponent("seed.png")
+  try makeImageData(type: "public.png" as CFString, metadata: false).write(to: seedPNG)
+  let seedAVIF = directory.appendingPathComponent("seed.avif")
+  do {
+    _ = try sanitizer.writeCanonicalAVIF(from: seedPNG, to: seedAVIF, quality: .high)
+  } catch let error as MetaShieldError where error == .avifEncodingUnavailable {
+    return  // Nothing to mutate where the encoder does not exist.
+  }
+  let clean = Array(try Data(contentsOf: seedAVIF))
+
+  var seed: UInt64 = 0xD1B5_4A32_D192_ED03
+  func nextRandom() -> UInt64 {
+    seed ^= seed << 13
+    seed ^= seed >> 7
+    seed ^= seed << 17
+    return seed
+  }
+
+  for iteration in 0..<256 {
+    var mutated = clean
+    let mutations = 1 + Int(nextRandom() % 6)
+    for _ in 0..<mutations {
+      let offset = Int(nextRandom() % UInt64(mutated.count))
+      mutated[offset] = UInt8(nextRandom() % 256)
+    }
+    let input = directory.appendingPathComponent("case-\(iteration).avif")
+    let data = Data(mutated)
+    try data.write(to: input)
+
+    // Both output paths must be safe for a hostile AVIF input.
+    let pngOutput = directory.appendingPathComponent("case-\(iteration).png")
+    do {
+      _ = try sanitizer.writeCanonicalPNG(from: input, to: pngOutput)
+      _ = try sanitizer.verifyCanonicalPNG(at: pngOutput)
+    } catch {
+      try expect(
+        !FileManager.default.fileExists(atPath: pngOutput.path),
+        "실패한 PNG 변환이 출력을 남겼습니다: case-\(iteration)")
+    }
+
+    let avifOutput = directory.appendingPathComponent("case-\(iteration).out.avif")
+    do {
+      _ = try sanitizer.writeCanonicalAVIF(from: input, to: avifOutput, quality: .high)
+      _ = try sanitizer.verifyCanonicalAVIF(at: avifOutput)
+    } catch {
+      try expect(
+        !FileManager.default.fileExists(atPath: avifOutput.path),
+        "실패한 AVIF 변환이 출력을 남겼습니다: case-\(iteration)")
+    }
+
+    try expect(
+      (try Data(contentsOf: input)) == data,
+      "변조 AVIF 입력이 변경되었습니다: case-\(iteration)")
+  }
+}
+
 let tests: [(String, () throws -> Void)] = [
   ("PNG 메타데이터·알파·xattr 제거", testAggressiveSanitization),
   ("알파 하위 비트 은닉 payload 제거", testAlphaLowBitPayloadIsDestroyed),
@@ -912,6 +1112,11 @@ let tests: [(String, () throws -> Void)] = [
   ("AVIF 변환이 기존 파일을 덮어쓰지 않음", testAVIFNeverReplacesExistingFile),
   ("AVIF 품질 범위 클램프", testAVIFQualityClamping),
   ("AVIF 다중 프레임 입력 거부", testAVIFRejectsAnimatedInput),
+  ("AVIF 알파 하위 비트 페이로드 제거", testAVIFDestroysAlphaLowBitPayload),
+  ("AVIF 자원 상한 준수", testAVIFRespectsResourceLimits),
+  ("AVIF 심볼릭 링크 입력 거부", testAVIFRejectsSymbolicLinkInput),
+  ("변조 입력에서 AVIF 미생성·원본 안전", testMalformedInputNeverProducesAVIF),
+  ("변조 AVIF 입력 코퍼스 안전", testMalformedAVIFInputCorpusIsSafe),
 ]
 
 do {
