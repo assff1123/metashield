@@ -14,7 +14,8 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
   private let titleLabel = NSTextField(labelWithString: "이미지의 숨은 정보를 남김없이 비웁니다")
   private let subtitleLabel = NSTextField(
     wrappingLabelWithString:
-      "PNG는 검증 후 원본을 영구 교체하며 투명도는 흰색으로 합성합니다. 다른 형식과 사진 앱·브라우저 이미지는 깨끗한 RGB PNG 사본으로 저장합니다.")
+      "PNG는 검증 후 원본을 영구 교체하며 투명도는 흰색으로 합성합니다. 다른 형식과 사진 앱·브라우저 이미지는 "
+      + "깨끗한 RGB PNG 사본으로 저장합니다. Finder 우클릭에서 AVIF 변환도 선택할 수 있습니다(원본 유지).")
   private let dropZone = DropZoneView()
   private let statusLabel = NSTextField(wrappingLabelWithString: "이미지를 이곳에 놓거나 아래 버튼으로 선택하세요.")
   private let chooseButton = NSButton(title: "이미지 선택…", target: nil, action: nil)
@@ -29,6 +30,8 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
   private let downloadUpdateButton = NSButton(
     title: "검증된 DMG 받기…", target: nil, action: nil)
   private let openReleaseButton = NSButton(title: "릴리스 페이지", target: nil, action: nil)
+  private let qualityLabel = NSTextField(labelWithString: "")
+  private let qualitySlider = NSSlider()
   private var pendingUpdate: ReleaseVersion?
   private var downloadedUpdate: URL?
   private var isProcessing = false
@@ -105,6 +108,22 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     openReleaseButton.isHidden = true
     openReleaseButton.setAccessibilityHelp("기본 브라우저에서 MetaShield 릴리스 페이지를 엽니다.")
 
+    // The compression level for the "AVIF로 변환 및 압축" command. It changes how
+    // small the new file is; it never changes whether a file is replaced.
+    qualitySlider.target = self
+    qualitySlider.action = #selector(changeAVIFQuality)
+    qualitySlider.minValue = AVIFQuality.minimumCompressionValue
+    qualitySlider.maxValue = AVIFQuality.maximumCompressionValue
+    qualitySlider.doubleValue = AVIFSettings.compressionQuality
+    qualitySlider.isContinuous = true
+    qualitySlider.setAccessibilityLabel("AVIF 압축 품질")
+    qualitySlider.setAccessibilityHelp(
+      "Finder 우클릭의 'AVIF로 변환 및 압축'이 사용할 품질입니다. 낮출수록 파일이 작아지고 화질이 떨어집니다. "
+        + "원본은 어느 경우에도 교체되지 않습니다.")
+    qualityLabel.font = .preferredFont(forTextStyle: .callout)
+    qualityLabel.textColor = .secondaryLabelColor
+    updateQualityLabel()
+
     dropZone.onFileURLs = { [weak self] urls in
       self?.receiveFileURLs(urls)
     }
@@ -133,9 +152,14 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     actionRow.spacing = 10
     actionRow.alignment = .centerY
 
+    let qualityRow = NSStackView(views: [qualityLabel, qualitySlider])
+    qualityRow.orientation = .horizontal
+    qualityRow.spacing = 10
+    qualityRow.alignment = .centerY
+
     let stack = NSStackView(views: [
-      titleLabel, subtitleLabel, dropZone, statusRow, actionRow, notifyToggle, updateRow,
-      updateStatusLabel,
+      titleLabel, subtitleLabel, dropZone, statusRow, actionRow, qualityRow, notifyToggle,
+      updateRow, updateStatusLabel,
     ])
     stack.orientation = .vertical
     stack.alignment = .centerX
@@ -155,6 +179,8 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
       statusRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
       statusLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor, constant: -28),
       actionRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
+      qualityRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
+      qualitySlider.widthAnchor.constraint(equalToConstant: 190),
       notifyToggle.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
       updateRow.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
       updateStatusLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
@@ -253,6 +279,17 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
   private func clearPhotoPermissionPicker() {
     photoPermissionPicker = nil
     photoPermissionProvider = nil
+  }
+
+  @objc private func changeAVIFQuality() {
+    AVIFSettings.compressionQuality = qualitySlider.doubleValue
+    updateQualityLabel()
+  }
+
+  private func updateQualityLabel() {
+    let percent = Int((AVIFSettings.compressionQuality * 100).rounded())
+    qualityLabel.stringValue = "AVIF 압축 품질 \(percent)%"
+    NSAccessibility.post(element: qualityLabel, notification: .valueChanged)
   }
 
   @objc private func toggleBackgroundNotifications() {
@@ -364,6 +401,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
 
   func receiveFileURLs(
     _ urls: [URL],
+    operation: SanitizeOperation = .scrubInPlace,
     silently: Bool = false,
     completion: ((Bool) -> Void)? = nil
   ) {
@@ -411,7 +449,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
 
     isSilentProcessing = silently
     processingCompletion = completion
-    beginProcessing()
+    beginProcessing(operation)
     let importDirectory = managedOutputDirectory
     DispatchQueue.global(qos: .userInitiated).async { [self] in
       var successes: [URL] = []
@@ -419,37 +457,62 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
       var photosOutputs: [URL] = []
       let sanitizer = ImageSanitizer()
 
-      for url in pngFiles {
-        do {
-          let report = try sanitizer.sanitizePNGInPlace(at: url)
-          successes.append(report.url)
-        } catch {
-          failures.append(ProcessingFailure(url: url, error: error))
+      if case .convertToAVIF(let quality) = operation {
+        // Conversion never replaces a source: every input becomes a new file.
+        for url in pngFiles + copyFiles {
+          do {
+            let destinationDirectory = try Self.automaticOutputDirectory(for: url)
+            let destination = OutputNaming.uniqueCleanAVIFURL(
+              in: destinationDirectory,
+              baseName: url.deletingPathExtension().lastPathComponent
+            )
+            let report = try sanitizer.writeCanonicalAVIF(
+              from: url, to: destination, quality: quality)
+            successes.append(report.url)
+          } catch {
+            failures.append(ProcessingFailure(url: url, error: error))
+          }
         }
-      }
+      } else {
+        for url in pngFiles {
+          do {
+            let report = try sanitizer.sanitizePNGInPlace(at: url)
+            successes.append(report.url)
+          } catch {
+            failures.append(ProcessingFailure(url: url, error: error))
+          }
+        }
 
-      for url in copyFiles {
-        do {
-          let destinationDirectory = try Self.automaticOutputDirectory(for: url)
-          let destination = OutputNaming.uniqueCleanPNGURL(
-            in: destinationDirectory,
-            baseName: url.deletingPathExtension().lastPathComponent
-          )
-          let report = try sanitizer.writeCanonicalPNG(from: url, to: destination)
-          successes.append(report.url)
-        } catch {
-          failures.append(ProcessingFailure(url: url, error: error))
+        for url in copyFiles {
+          do {
+            let destinationDirectory = try Self.automaticOutputDirectory(for: url)
+            let destination = OutputNaming.uniqueCleanPNGURL(
+              in: destinationDirectory,
+              baseName: url.deletingPathExtension().lastPathComponent
+            )
+            let report = try sanitizer.writeCanonicalPNG(from: url, to: destination)
+            successes.append(report.url)
+          } catch {
+            failures.append(ProcessingFailure(url: url, error: error))
+          }
         }
       }
 
       if let importDirectory {
         for url in managedFiles {
           do {
-            let destination = OutputNaming.uniqueCleanPNGURL(
-              in: importDirectory,
-              baseName: url.deletingPathExtension().lastPathComponent
-            )
-            let report = try sanitizer.writeCanonicalPNG(from: url, to: destination)
+            let baseName = url.deletingPathExtension().lastPathComponent
+            let report: SanitizationReport
+            if case .convertToAVIF(let quality) = operation {
+              report = try sanitizer.writeCanonicalAVIF(
+                from: url,
+                to: OutputNaming.uniqueCleanAVIFURL(in: importDirectory, baseName: baseName),
+                quality: quality)
+            } else {
+              report = try sanitizer.writeCanonicalPNG(
+                from: url,
+                to: OutputNaming.uniqueCleanPNGURL(in: importDirectory, baseName: baseName))
+            }
             photosOutputs.append(report.url)
           } catch {
             failures.append(ProcessingFailure(url: url, error: error))
@@ -483,6 +546,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
   func receiveImageData(
     _ data: Data,
     suggestedName: String,
+    operation: SanitizeOperation = .scrubInPlace,
     silently: Bool = false,
     completion: ((Bool) -> Void)? = nil
   ) {
@@ -496,7 +560,10 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
       let directory = try Self.defaultOutputDirectory()
       let baseName = URL(fileURLWithPath: suggestedName)
         .deletingPathExtension().lastPathComponent
-      destination = OutputNaming.uniqueCleanPNGURL(in: directory, baseName: baseName)
+      destination =
+        operation.isConversion
+        ? OutputNaming.uniqueCleanAVIFURL(in: directory, baseName: baseName)
+        : OutputNaming.uniqueCleanPNGURL(in: directory, baseName: baseName)
     } catch {
       reportImmediateFailure(
         "자동 저장 폴더를 준비하지 못했습니다: \(error.localizedDescription)", silently: silently)
@@ -506,10 +573,17 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
 
     isSilentProcessing = silently
     processingCompletion = completion
-    beginProcessing()
+    beginProcessing(operation)
     DispatchQueue.global(qos: .userInitiated).async { [self] in
       do {
-        let report = try ImageSanitizer().writeCanonicalPNG(from: data, to: destination)
+        let sanitizer = ImageSanitizer()
+        let report: SanitizationReport
+        if case .convertToAVIF(let quality) = operation {
+          report = try sanitizer.writeCanonicalAVIF(
+            from: data, to: destination, quality: quality)
+        } else {
+          report = try sanitizer.writeCanonicalPNG(from: data, to: destination)
+        }
         Task { @MainActor in
           self.finishProcessing(successes: [report.url], failures: [])
         }
@@ -776,7 +850,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     }
   }
 
-  private func beginProcessing() {
+  private func beginProcessing(_ operation: SanitizeOperation = .scrubInPlace) {
     isProcessing = true
     chooseButton.isEnabled = false
     photoPermissionButton.isEnabled = false
@@ -786,7 +860,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
       spinner.startAnimation(nil)
     }
-    showStatus("디코딩·정리·재검증 중…", isError: false)
+    showStatus(operation.progressDescription, isError: false)
   }
 
   private func finishProcessing(successes: [URL], failures: [ProcessingFailure]) {

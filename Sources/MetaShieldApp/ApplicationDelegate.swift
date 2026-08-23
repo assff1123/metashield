@@ -6,8 +6,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate,
   UNUserNotificationCenterDelegate
 {
   private enum ExternalRequest {
-    case files([URL])
-    case imageData(Data, suggestedName: String)
+    case files([URL], operation: SanitizeOperation)
+    case imageData(Data, suggestedName: String, operation: SanitizeOperation)
   }
 
   private var window: NSWindow?
@@ -84,20 +84,22 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate,
   func application(_ sender: NSApplication, openFiles filenames: [String]) {
     hasExternalOpenRequest = true
     let urls = filenames.map { URL(fileURLWithPath: $0) }
-    externalRequests.append(.files(urls))
+    // A plain file-open (Dock drag, Open With) is always the scrub command.
+    externalRequests.append(.files(urls, operation: .scrubInPlace))
     deliverNextExternalRequestIfNeeded()
     sender.reply(toOpenOrPrint: .success)
   }
 
-  fileprivate func deliverServiceURLs(_ urls: [URL]) {
+  fileprivate func deliverServiceURLs(_ urls: [URL], operation: SanitizeOperation) {
     hasExternalOpenRequest = true
-    externalRequests.append(.files(urls))
+    externalRequests.append(.files(urls, operation: operation))
     deliverNextExternalRequestIfNeeded()
   }
 
-  fileprivate func deliverServiceImageData(_ data: Data) {
+  fileprivate func deliverServiceImageData(_ data: Data, operation: SanitizeOperation) {
     hasExternalOpenRequest = true
-    externalRequests.append(.imageData(data, suggestedName: "Cleaned Image.png"))
+    let name = operation.isConversion ? "Converted Image.png" : "Cleaned Image.png"
+    externalRequests.append(.imageData(data, suggestedName: name, operation: operation))
     deliverNextExternalRequestIfNeeded()
   }
 
@@ -120,12 +122,14 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate,
     }
 
     switch request {
-    case .files(let urls):
-      controller.receiveFileURLs(urls, silently: true, completion: completion)
-    case .imageData(let data, let suggestedName):
+    case .files(let urls, let operation):
+      controller.receiveFileURLs(
+        urls, operation: operation, silently: true, completion: completion)
+    case .imageData(let data, let suggestedName, let operation):
       controller.receiveImageData(
         data,
         suggestedName: suggestedName,
+        operation: operation,
         silently: true,
         completion: completion
       )
@@ -210,6 +214,30 @@ private final class ImageServiceProvider: NSObject {
     userData: String?,
     error: AutoreleasingUnsafeMutablePointer<NSString?>
   ) {
+    deliver(pasteboard, operation: .scrubInPlace, error: error)
+  }
+
+  @objc func convertToAVIF(
+    _ pasteboard: NSPasteboard,
+    userData: String?,
+    error: AutoreleasingUnsafeMutablePointer<NSString?>
+  ) {
+    deliver(pasteboard, operation: .convertToAVIF(.high), error: error)
+  }
+
+  @objc func convertToAVIFCompressed(
+    _ pasteboard: NSPasteboard,
+    userData: String?,
+    error: AutoreleasingUnsafeMutablePointer<NSString?>
+  ) {
+    deliver(pasteboard, operation: .convertToAVIF(AVIFSettings.compressedQuality), error: error)
+  }
+
+  private func deliver(
+    _ pasteboard: NSPasteboard,
+    operation: SanitizeOperation,
+    error: AutoreleasingUnsafeMutablePointer<NSString?>
+  ) {
     let urls =
       pasteboard.readObjects(
         forClasses: [NSURL.self],
@@ -217,11 +245,11 @@ private final class ImageServiceProvider: NSObject {
       ) as? [URL] ?? []
 
     if !urls.isEmpty {
-      applicationDelegate?.deliverServiceURLs(urls)
+      applicationDelegate?.deliverServiceURLs(urls, operation: operation)
       return
     }
     if let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff) {
-      applicationDelegate?.deliverServiceImageData(data)
+      applicationDelegate?.deliverServiceImageData(data, operation: operation)
       return
     }
     error.pointee = "선택한 앱이 파일 경로나 이미지 데이터를 제공하지 않았습니다." as NSString

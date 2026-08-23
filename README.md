@@ -13,7 +13,7 @@ off-by-default GitHub release check; image data and metadata are never transmitt
 MetaShield was developed with AI coding assistance. The sanitizing core, the file
 replacement path, and the update check were reviewed by a human against the threat
 model in `AUDIT.md`, and every claim in the guarantee boundary below is backed by an
-automated self test (`swift run -c release metashield-self-test`, 20/20). No
+automated self test (`swift run -c release metashield-self-test`, 24/24). No
 third-party code is vendored: the app links only Apple system frameworks and the
 system zlib.
 
@@ -37,6 +37,33 @@ macOS may attach protected security attributes such as `com.apple.provenance` an
 `com.apple.macl` to a newly created file. They are generated or managed by the OS
 and are not copied image metadata. MetaShield does not try to defeat those macOS
 security controls.
+
+## AVIF conversion (separate, weaker guarantee)
+
+MetaShield can also write an AVIF copy, for cases where file size matters more
+than a byte-level structural guarantee. This is a *different* promise and is
+stated separately on purpose:
+
+- AVIF conversion never replaces a source file. It always writes a new file
+  beside the original, so the one irreversible operation in MetaShield remains
+  the explicitly named in-place PNG command.
+- AVIF is always lossy. Apple's encoder has no lossless mode, and a requested
+  quality of 1.0 makes it fail outright, so the usable range stops below that.
+  Pixels are re-encoded and will not match the source exactly.
+- The image handed to the encoder is produced by the same pipeline as the PNG
+  path: a freshly decoded, single-frame, fully opaque 8-bit sRGB image built from
+  raw samples, carrying none of the source's metadata, alpha, or extended
+  attributes. Alpha-LSB payloads are destroyed before encoding, exactly as for PNG.
+- The written file is re-read and rejected unless it decodes to one opaque image
+  at the expected dimensions and carries no EXIF, GPS, IPTC, maker-note, or other
+  descriptive metadata container. Apple's encoder writes only structural entries
+  (orientation, tile geometry), which are the only `{TIFF}` keys accepted.
+- What AVIF does *not* get is the PNG path's chunk-level canonicalization: there
+  is no equivalent of "only IHDR, IDAT and IEND, with a validated zlib stream".
+  The AVIF guarantee is about what the file decodes to and what metadata it
+  reports, not about every byte of its container.
+
+No third-party code is involved: AVIF encoding is provided by Apple's ImageIO.
 
 Arbitrary steganography embedded in visible RGB pixels is outside this guarantee.
 Claiming to remove every possible hidden message while preserving an image would be
@@ -138,7 +165,17 @@ swift run metashield-cli --verify image.png
 
 After installing and launching MetaShield once, supported applications can show:
 
-`Services > 메타데이터 완전 제거 및 덮어쓰기`
+```
+Services > 메타데이터 완전 제거 및 덮어쓰기          (in place, irreversible)
+Services > AVIF로 변환 (메타데이터 제거)              (new file, original kept)
+Services > AVIF로 변환 및 압축 (메타데이터 제거)      (new file, original kept)
+```
+
+Each menu item names exactly what it does. The compression level used by the
+third item is a slider in the main window; it changes how small the new file is
+and never changes whether a file is replaced. Services cannot be added or removed
+at runtime — they are declared in the app bundle — so unwanted entries are hidden
+in System Settings > Keyboard > Keyboard Shortcuts > Services.
 
 The host application decides whether it exposes a selected image to macOS Services.
 Dragging to MetaShield is the reliable fallback for Photos, browsers, and other apps.

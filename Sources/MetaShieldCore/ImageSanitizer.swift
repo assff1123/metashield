@@ -149,7 +149,89 @@ public final class ImageSanitizer: Sendable {
     return inspection
   }
 
-  private func makeCanonicalPNG(from source: CGImageSource) throws -> Data {
+  /// Writes a sanitized AVIF copy beside or into the chosen directory.
+  ///
+  /// AVIF is always a lossy copy and therefore never replaces the source: the
+  /// original stays untouched, which keeps the one irreversible operation in
+  /// MetaShield the explicitly named in-place PNG command.
+  public func writeCanonicalAVIF(
+    from sourceURL: URL,
+    to destinationURL: URL,
+    quality: AVIFQuality
+  ) throws -> SanitizationReport {
+    let inputURL = sourceURL.standardizedFileURL
+    let outputURL = destinationURL.standardizedFileURL
+    let sourceData = try mappedInputData(at: inputURL)
+    return try writeCanonicalAVIF(
+      from: sourceData, originalByteCount: sourceData.count, to: outputURL, quality: quality)
+  }
+
+  public func writeCanonicalAVIF(
+    from sourceData: Data,
+    to destinationURL: URL,
+    quality: AVIFQuality
+  ) throws -> SanitizationReport {
+    try validateInputByteCount(sourceData.count)
+    return try writeCanonicalAVIF(
+      from: sourceData,
+      originalByteCount: sourceData.count,
+      to: destinationURL.standardizedFileURL,
+      quality: quality
+    )
+  }
+
+  public func verifyCanonicalAVIF(at url: URL) throws -> AVIFInspection {
+    let data = try mappedInputData(at: url.standardizedFileURL)
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+      let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+      let width = properties[kCGImagePropertyPixelWidth] as? Int,
+      let height = properties[kCGImagePropertyPixelHeight] as? Int
+    else {
+      throw MetaShieldError.verificationFailed("AVIF 파일을 읽지 못했습니다.")
+    }
+    return try AVIFInspector.verify(data, expectedWidth: width, expectedHeight: height)
+  }
+
+  private func writeCanonicalAVIF(
+    from sourceData: Data,
+    originalByteCount: Int,
+    to outputURL: URL,
+    quality: AVIFQuality
+  ) throws -> SanitizationReport {
+    try validateInputByteCount(sourceData.count)
+    guard
+      let source = CGImageSourceCreateWithData(
+        sourceData as CFData,
+        [kCGImageSourceShouldCache: false] as CFDictionary)
+    else {
+      throw MetaShieldError.unsupportedOrCorruptImage
+    }
+    let cleanImage = try makeSanitizedImage(from: source)
+    let encoded = try encode(
+      cleanImage,
+      as: AVIFInspector.typeIdentifier,
+      options: [
+        kCGImageDestinationLossyCompressionQuality: quality.compressionValue
+      ] as CFDictionary
+    )
+    let inspection = try AVIFInspector.verify(
+      encoded, expectedWidth: cleanImage.width, expectedHeight: cleanImage.height)
+    try writeVerifiedAVIF(
+      encoded, width: inspection.width, height: inspection.height, to: outputURL)
+    return SanitizationReport(
+      url: outputURL,
+      width: inspection.width,
+      height: inspection.height,
+      originalByteCount: originalByteCount,
+      sanitizedByteCount: encoded.count,
+      chunkTypes: []
+    )
+  }
+
+  /// Decodes one frame and rebuilds it as a fresh, fully opaque 8-bit sRGB image
+  /// carrying no source metadata. Both the PNG and the AVIF encoders start here,
+  /// so the scrubbing guarantees do not depend on the output format.
+  private func makeSanitizedImage(from source: CGImageSource) throws -> CGImage {
     let frameCount = CGImageSourceGetCount(source)
     guard frameCount > 0 else {
       throw MetaShieldError.unsupportedOrCorruptImage
@@ -251,23 +333,36 @@ public final class ImageSanitizer: Sendable {
       throw MetaShieldError.imageEncodingFailed
     }
 
+    return cleanImage
+  }
+
+  private func makeCanonicalPNG(from source: CGImageSource) throws -> Data {
+    let cleanImage = try makeSanitizedImage(from: source)
+    let encoded = try encode(cleanImage, as: "public.png", options: nil)
+    return try PNGInspector.canonicalData(from: encoded)
+  }
+
+  private func encode(
+    _ image: CGImage,
+    as typeIdentifier: String,
+    options: CFDictionary?
+  ) throws -> Data {
     let mutableData = NSMutableData()
     guard
       let destination = CGImageDestinationCreateWithData(
         mutableData,
-        "public.png" as CFString,
+        typeIdentifier as CFString,
         1,
         nil
       )
     else {
       throw MetaShieldError.imageEncodingFailed
     }
-    CGImageDestinationAddImage(destination, cleanImage, nil)
+    CGImageDestinationAddImage(destination, image, options)
     guard CGImageDestinationFinalize(destination) else {
       throw MetaShieldError.imageEncodingFailed
     }
-
-    return try PNGInspector.canonicalData(from: mutableData as Data)
+    return mutableData as Data
   }
 
   /// Reads unpremultiplied 8-bit sRGB samples. vImage converts the decoded
@@ -652,6 +747,46 @@ public final class ImageSanitizer: Sendable {
         }
         try FileManager.default.removeItem(at: tempURL)
       }
+    } catch {
+      try? FileManager.default.removeItem(at: tempURL)
+      throw error
+    }
+  }
+
+  /// Writes a sanitized AVIF copy, re-reading and re-verifying the bytes that
+  /// actually reached disk. AVIF never replaces an original: a lossy copy must
+  /// not be able to destroy the source, so the destination must not already
+  /// exist.
+  private func writeVerifiedAVIF(
+    _ data: Data,
+    width: Int,
+    height: Int,
+    to url: URL
+  ) throws {
+    let directory = url.deletingLastPathComponent()
+    guard FileManager.default.fileExists(atPath: directory.path) else {
+      throw MetaShieldError.fileOperationFailed("대상 폴더가 없습니다.")
+    }
+    guard !FileManager.default.fileExists(atPath: url.path) else {
+      throw MetaShieldError.fileOperationFailed("같은 이름의 파일이 이미 있습니다.")
+    }
+
+    let tempURL = directory.appendingPathComponent(".metashield-\(UUID().uuidString).avif")
+    do {
+      try writeTemporaryDataSecurely(data, to: tempURL, permissions: 0o644)
+      try synchronizeFile(at: tempURL)
+      let reread = try Data(contentsOf: tempURL, options: [.mappedIfSafe])
+      try AVIFInspector.verify(reread, expectedWidth: width, expectedHeight: height)
+
+      let result = tempURL.path.withCString { sourcePath in
+        url.path.withCString { destinationPath in
+          link(sourcePath, destinationPath)
+        }
+      }
+      guard result == 0 else {
+        throw MetaShieldError.fileOperationFailed(String(cString: strerror(errno)))
+      }
+      try FileManager.default.removeItem(at: tempURL)
     } catch {
       try? FileManager.default.removeItem(at: tempURL)
       throw error

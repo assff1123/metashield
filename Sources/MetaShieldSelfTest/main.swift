@@ -755,6 +755,109 @@ private func testPhotoPermissionSetupMarker() throws {
   )
 }
 
+private func testAVIFExportRemovesMetadata() throws {
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+
+  // A JPEG carrying EXIF, GPS and a distinctive comment string.
+  let source = directory.appendingPathComponent("source.jpg")
+  let image = try makeRGBAImage()
+  let encoded = NSMutableData()
+  guard
+    let destination = CGImageDestinationCreateWithData(
+      encoded, "public.jpeg" as CFString, 1, nil)
+  else { throw SelfTestError.assertion("테스트용 JPEG 대상 생성 실패") }
+  CGImageDestinationAddImage(
+    destination, image,
+    [
+      kCGImagePropertyExifDictionary: [
+        kCGImagePropertyExifUserComment: "AVIF-LEAK-CANARY",
+        kCGImagePropertyExifDateTimeOriginal: "2026:08:23 21:00:00",
+      ],
+      kCGImagePropertyGPSDictionary: [kCGImagePropertyGPSLatitude: 37.5665],
+    ] as CFDictionary)
+  try expect(CGImageDestinationFinalize(destination), "테스트용 JPEG 생성 실패")
+  try (encoded as Data).write(to: source)
+
+  let sanitizer = ImageSanitizer()
+  let output = directory.appendingPathComponent("out.avif")
+  let report = try sanitizer.writeCanonicalAVIF(from: source, to: output, quality: .high)
+  try expect(report.width > 0 && report.height > 0, "AVIF 출력 크기가 잘못되었습니다.")
+
+  // The canary must not survive anywhere in the produced bytes.
+  let produced = try Data(contentsOf: output)
+  let canary = Array("AVIF-LEAK-CANARY".utf8)
+  let bytes = Array(produced)
+  let leaked = bytes.indices.contains { index in
+    index + canary.count <= bytes.count && Array(bytes[index..<(index + canary.count)]) == canary
+  }
+  try expect(!leaked, "AVIF 출력에 원본 EXIF 문자열이 남았습니다.")
+
+  // And the structural verification must accept the file we just wrote.
+  let inspection = try sanitizer.verifyCanonicalAVIF(at: output)
+  try expect(
+    inspection.width == report.width && inspection.height == report.height,
+    "AVIF 재검증 크기가 다릅니다.")
+
+  // The source must be untouched.
+  try expect(
+    FileManager.default.fileExists(atPath: source.path), "AVIF 변환이 원본을 지웠습니다.")
+}
+
+private func testAVIFNeverReplacesExistingFile() throws {
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let source = directory.appendingPathComponent("in.png")
+  try makeImageData(type: "public.png" as CFString, metadata: false).write(to: source)
+
+  let output = directory.appendingPathComponent("out.avif")
+  let existing = Data("PRE-EXISTING".utf8)
+  try existing.write(to: output)
+
+  let sanitizer = ImageSanitizer()
+  do {
+    _ = try sanitizer.writeCanonicalAVIF(from: source, to: output, quality: .compressed(0.7))
+    throw SelfTestError.assertion("이미 존재하는 파일을 AVIF가 덮어썼습니다.")
+  } catch let error as MetaShieldError {
+    guard case .fileOperationFailed = error else { throw error }
+  }
+  try expect(
+    (try Data(contentsOf: output)) == existing, "AVIF 변환이 기존 파일을 훼손했습니다.")
+}
+
+private func testAVIFQualityClamping() throws {
+  // ImageIO rejects a quality of 1.0 outright, so the range must stay below it.
+  try expect(
+    AVIFQuality.compressed(5.0).compressionValue == AVIFQuality.maximumCompressionValue,
+    "AVIF 품질 상한 클램프가 동작하지 않습니다.")
+  try expect(
+    AVIFQuality.compressed(-1.0).compressionValue == AVIFQuality.minimumCompressionValue,
+    "AVIF 품질 하한 클램프가 동작하지 않습니다.")
+  try expect(
+    AVIFQuality.maximumCompressionValue < 1.0,
+    "AVIF 품질 상한이 1.0 미만이어야 합니다.")
+  try expect(
+    AVIFQuality.high.compressionValue > AVIFQuality.defaultCompressionValue,
+    "고품질 변환이 기본 압축보다 품질이 높아야 합니다.")
+}
+
+private func testAVIFRejectsAnimatedInput() throws {
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let source = directory.appendingPathComponent("animated.gif")
+  try makeImageData(type: "com.compuserve.gif" as CFString, count: 3, metadata: false)
+    .write(to: source)
+  let output = directory.appendingPathComponent("out.avif")
+  do {
+    _ = try ImageSanitizer().writeCanonicalAVIF(from: source, to: output, quality: .high)
+    throw SelfTestError.assertion("움직이는 이미지를 AVIF로 변환했습니다.")
+  } catch let error as MetaShieldError {
+    try expect(error == .animatedImageNotAllowed, "예상과 다른 오류: \(error)")
+  }
+  try expect(
+    !FileManager.default.fileExists(atPath: output.path), "실패했는데 출력 파일이 남았습니다.")
+}
+
 let tests: [(String, () throws -> Void)] = [
   ("PNG 메타데이터·알파·xattr 제거", testAggressiveSanitization),
   ("알파 하위 비트 은닉 payload 제거", testAlphaLowBitPayloadIsDestroyed),
@@ -776,6 +879,10 @@ let tests: [(String, () throws -> Void)] = [
   ("IEND·IDAT 숨은 페이로드 거부", testHiddenChunkPayloadsAreRejected),
   ("변조 PNG 코퍼스 원본 안전", testMalformedCorpusNeverCorruptsInput),
   ("사진 앱 권한 설정 마커", testPhotoPermissionSetupMarker),
+  ("AVIF 변환이 메타데이터를 남기지 않음", testAVIFExportRemovesMetadata),
+  ("AVIF 변환이 기존 파일을 덮어쓰지 않음", testAVIFNeverReplacesExistingFile),
+  ("AVIF 품질 범위 클램프", testAVIFQualityClamping),
+  ("AVIF 다중 프레임 입력 거부", testAVIFRejectsAnimatedInput),
 ]
 
 do {
