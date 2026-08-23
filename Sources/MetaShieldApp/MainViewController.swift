@@ -452,7 +452,11 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
       let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("MetaShieldImport-\(UUID().uuidString)", isDirectory: true)
       do {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+          at: directory,
+          withIntermediateDirectories: true,
+          attributes: [.posixPermissions: 0o700]
+        )
         temporaryInputDirectories.append(directory)
         managedOutputDirectory = directory
       } catch {
@@ -816,7 +820,13 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("MetaShieldDrop-\(UUID().uuidString)", isDirectory: true)
     do {
-      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      // Images in flight pass through here, so do not rely on the enclosing
+      // temporary directory's permissions to keep them private.
+      try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+      )
     } catch {
       showStatus("드래그한 이미지를 받을 임시 폴더를 만들지 못했습니다.", isError: true)
       return

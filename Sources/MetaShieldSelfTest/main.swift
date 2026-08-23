@@ -1091,6 +1091,53 @@ private func testMalformedAVIFInputCorpusIsSafe() throws {
   }
 }
 
+private func testHostileSuggestedNamesStayInsideDirectory() throws {
+  // The share extension takes `NSItemProvider.suggestedName` from whichever app
+  // is sharing, so that string is attacker-controlled. Every surface funnels it
+  // through OutputNaming, which must never let a name escape the destination
+  // directory or collide with an existing file.
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let root = directory.standardizedFileURL.path
+
+  let hostileNames = [
+    "../../../../etc/passwd",
+    "../../evil",
+    "..",
+    ".",
+    "/etc/shadow",
+    "a/b/c",
+    "",
+    String(repeating: "A", count: 400),
+    "~/.ssh/authorized_keys",
+    "....//....//x",
+    "..\\..\\windows",
+    "con",
+    ".hidden",
+    "-rf",
+  ]
+
+  for name in hostileNames {
+    // Exactly the normalization the share extension and the app perform.
+    let cleaned = URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent
+    for output in [
+      OutputNaming.uniqueCleanPNGURL(in: directory, baseName: cleaned),
+      OutputNaming.uniqueCleanAVIFURL(in: directory, baseName: cleaned),
+    ] {
+      let resolved = output.standardizedFileURL.path
+      try expect(
+        resolved.hasPrefix(root + "/"),
+        "출력 경로가 대상 폴더를 벗어났습니다: \(name) → \(resolved)")
+      try expect(
+        URL(fileURLWithPath: resolved).deletingLastPathComponent().standardizedFileURL.path == root,
+        "출력이 하위 폴더로 새어나갔습니다: \(name) → \(resolved)")
+      try expect(
+        !FileManager.default.fileExists(atPath: resolved),
+        "이미 존재하는 경로를 출력으로 골랐습니다: \(name)")
+    }
+  }
+}
+
 let tests: [(String, () throws -> Void)] = [
   ("PNG 메타데이터·알파·xattr 제거", testAggressiveSanitization),
   ("알파 하위 비트 은닉 payload 제거", testAlphaLowBitPayloadIsDestroyed),
@@ -1121,6 +1168,7 @@ let tests: [(String, () throws -> Void)] = [
   ("AVIF 심볼릭 링크 입력 거부", testAVIFRejectsSymbolicLinkInput),
   ("변조 입력에서 AVIF 미생성·원본 안전", testMalformedInputNeverProducesAVIF),
   ("변조 AVIF 입력 코퍼스 안전", testMalformedAVIFInputCorpusIsSafe),
+  ("적대적 파일명이 대상 폴더를 벗어나지 않음", testHostileSuggestedNamesStayInsideDirectory),
 ]
 
 do {

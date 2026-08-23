@@ -306,7 +306,10 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
 
     do {
       try FileManager.default.createDirectory(
-        at: temporaryDirectory, withIntermediateDirectories: true)
+        at: temporaryDirectory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+      )
       // Share extensions have a much smaller memory budget than the host app.
       // File-backed provider input plus an 8 MP cap avoids loading the source
       // and decoded image into memory at the same time.
