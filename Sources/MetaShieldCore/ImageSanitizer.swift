@@ -206,6 +206,9 @@ public final class ImageSanitizer: Sendable {
     else {
       throw MetaShieldError.unsupportedOrCorruptImage
     }
+    guard AVIFInspector.isEncodingAvailable else {
+      throw MetaShieldError.avifEncodingUnavailable
+    }
     let cleanImage = try makeSanitizedImage(from: source)
     let encoded = try encode(
       cleanImage,

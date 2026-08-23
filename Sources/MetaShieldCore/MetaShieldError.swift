@@ -16,6 +16,7 @@ public enum MetaShieldError: LocalizedError, Equatable {
   case invalidPNG(String)
   case verificationFailed(String)
   case unsupportedInPlaceFormat(String)
+  case avifEncodingUnavailable
   case fileOperationFailed(String)
 
   public var errorDescription: String? {
@@ -50,6 +51,8 @@ public enum MetaShieldError: LocalizedError, Equatable {
       return "정리 결과 검증에 실패했습니다: \(reason)"
     case .unsupportedInPlaceFormat(let ext):
       return "원본 덮어쓰기는 PNG만 지원합니다 (입력: \(ext))."
+    case .avifEncodingUnavailable:
+      return "이 macOS 버전은 AVIF 저장을 지원하지 않습니다. 메타데이터 제거는 그대로 사용할 수 있습니다."
     case .fileOperationFailed(let reason):
       return "파일 처리에 실패했습니다: \(reason)"
     }

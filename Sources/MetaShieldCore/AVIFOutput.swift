@@ -47,6 +47,18 @@ public struct AVIFInspection: Equatable, Sendable {
 public enum AVIFInspector {
   public static let typeIdentifier = "public.avif"
 
+  /// Whether this macOS can *write* AVIF.
+  ///
+  /// ImageIO decodes AVIF on far older releases than it encodes it, and the
+  /// encoder simply is not registered where it is unavailable — so the check
+  /// asks ImageIO directly rather than comparing OS version numbers. The app's
+  /// deployment target is older than the first release that can encode, so this
+  /// has to be answered at runtime on every launch.
+  public static var isEncodingAvailable: Bool {
+    let identifiers = CGImageDestinationCopyTypeIdentifiers() as? [String] ?? []
+    return identifiers.contains(typeIdentifier)
+  }
+
   /// Metadata containers that must never appear in a sanitized copy. Stored as
   /// plain strings because `CFString` constants are not `Sendable`.
   private static let forbiddenPropertyNames: Set<String> = [

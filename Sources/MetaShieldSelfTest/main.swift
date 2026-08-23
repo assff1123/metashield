@@ -755,7 +755,34 @@ private func testPhotoPermissionSetupMarker() throws {
   )
 }
 
+/// On a system without an AVIF encoder every conversion must fail with the
+/// dedicated error, leave no partial file behind, and never touch the source.
+private func expectAVIFUnavailableFailure() throws {
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let source = directory.appendingPathComponent("in.png")
+  let original = try makeImageData(type: "public.png" as CFString, metadata: false)
+  try original.write(to: source)
+  let output = directory.appendingPathComponent("out.avif")
+  do {
+    _ = try ImageSanitizer().writeCanonicalAVIF(from: source, to: output, quality: .high)
+    throw SelfTestError.assertion("AVIF 인코더가 없는데 변환이 성공했습니다.")
+  } catch let error as MetaShieldError {
+    try expect(error == .avifEncodingUnavailable, "예상과 다른 오류: \(error)")
+  }
+  try expect(
+    !FileManager.default.fileExists(atPath: output.path), "실패했는데 출력 파일이 남았습니다.")
+  try expect(
+    (try Data(contentsOf: source)) == original, "AVIF 실패가 원본을 변경했습니다.")
+}
+
 private func testAVIFExportRemovesMetadata() throws {
+  // AVIF encoding is unavailable on older macOS. Where it is missing the
+  // contract is a clear, specific failure rather than a crash or a bad file.
+  guard AVIFInspector.isEncodingAvailable else {
+    try expectAVIFUnavailableFailure()
+    return
+  }
   let directory = try makeTemporaryDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -805,6 +832,7 @@ private func testAVIFExportRemovesMetadata() throws {
 }
 
 private func testAVIFNeverReplacesExistingFile() throws {
+  guard AVIFInspector.isEncodingAvailable else { return }
   let directory = try makeTemporaryDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
   let source = directory.appendingPathComponent("in.png")
@@ -842,6 +870,7 @@ private func testAVIFQualityClamping() throws {
 }
 
 private func testAVIFRejectsAnimatedInput() throws {
+  guard AVIFInspector.isEncodingAvailable else { return }
   let directory = try makeTemporaryDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
   let source = directory.appendingPathComponent("animated.gif")

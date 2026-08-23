@@ -63,7 +63,17 @@ stated separately on purpose:
   The AVIF guarantee is about what the file decodes to and what metadata it
   reports, not about every byte of its container.
 
-No third-party code is involved: AVIF encoding is provided by Apple's ImageIO.
+**AVIF conversion requires macOS 26 or later.** Apple's ImageIO gained an AVIF
+*encoder* only in macOS 26; releases 13 through 15 can decode AVIF but not write
+it. This was measured on GitHub's macOS 14, 15 and 26 runners, not inferred from
+version numbers. Because the app supports macOS 13 and up, availability is checked
+at runtime: on an older system the two AVIF menu items fail immediately with a
+message saying so, no partial file is written, and the source is untouched. The
+metadata-scrubbing commands are unaffected and work on every supported release.
+
+Supporting AVIF (or WebP) on older macOS would require vendoring an encoder, which
+is why it is not done: no third-party code is involved here, and AVIF encoding is
+provided by Apple's ImageIO where the OS offers it.
 
 Arbitrary steganography embedded in visible RGB pixels is outside this guarantee.
 Claiming to remove every possible hidden message while preserving an image would be
