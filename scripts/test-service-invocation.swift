@@ -4,14 +4,28 @@ import AppKit
 import Darwin
 import Foundation
 
-private let serviceName = "메타데이터 완전 제거 및 덮어쓰기"
+private let defaultServiceName = "메타데이터 완전 제거 및 덮어쓰기"
 
-guard CommandLine.arguments.count > 1 else {
-  FileHandle.standardError.write(Data("사용법: test-service-invocation.swift <이미지> [...]\n".utf8))
+// A release check has to exercise every declared service, not just the default
+// one, so the menu title can be chosen from the command line.
+var arguments = Array(CommandLine.arguments.dropFirst())
+var serviceName = defaultServiceName
+if arguments.first == "--service" {
+  guard arguments.count >= 2 else {
+    FileHandle.standardError.write(Data("--service 뒤에 서비스 이름이 필요합니다.\n".utf8))
+    exit(64)
+  }
+  serviceName = arguments[1]
+  arguments.removeFirst(2)
+}
+
+guard !arguments.isEmpty else {
+  FileHandle.standardError.write(
+    Data("사용법: test-service-invocation.swift [--service <이름>] <이미지> [...]\n".utf8))
   exit(64)
 }
 
-let paths = CommandLine.arguments.dropFirst().map {
+let paths = arguments.map {
   URL(fileURLWithPath: $0).standardizedFileURL.path
 }
 guard paths.allSatisfy({ FileManager.default.fileExists(atPath: $0) }) else {
