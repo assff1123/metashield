@@ -888,6 +888,7 @@ private func testAVIFRejectsAnimatedInput() throws {
 }
 
 private func testAVIFDestroysAlphaLowBitPayload() throws {
+  guard AVIFInspector.isEncodingAvailable else { return }
   // The PNG path has this test; the AVIF path shares the pipeline but ships a
   // different encoder, so the guarantee has to be proven at the AVIF output too.
   let directory = try makeTemporaryDirectory()
@@ -908,11 +909,7 @@ private func testAVIFDestroysAlphaLowBitPayload() throws {
 
   let output = directory.appendingPathComponent("out.avif")
   let sanitizer = ImageSanitizer()
-  do {
-    _ = try sanitizer.writeCanonicalAVIF(from: source, to: output, quality: .high)
-  } catch let error as MetaShieldError where error == .avifEncodingUnavailable {
-    return  // Nothing to prove where the encoder does not exist.
-  }
+  _ = try sanitizer.writeCanonicalAVIF(from: source, to: output, quality: .high)
 
   let produced = try Data(contentsOf: output)
   let bytes = Array(produced)
@@ -945,6 +942,16 @@ private func testAVIFRespectsResourceLimits() throws {
     throw SelfTestError.assertion("AVIF 경로가 입력 바이트 상한을 무시했습니다.")
   } catch let error as MetaShieldError {
     guard case .inputFileTooLarge = error else { throw error }
+  }
+
+  // The byte ceiling above is checked before the encoder is consulted, so it
+  // holds everywhere. The pixel ceiling lives inside the decode step, which is
+  // only reached where AVIF encoding exists.
+  guard AVIFInspector.isEncodingAvailable else {
+    try expect(
+      !FileManager.default.fileExists(atPath: directory.appendingPathComponent("a.avif").path),
+      "상한을 넘겼는데 출력 파일이 생겼습니다.")
+    return
   }
 
   // Pixel ceiling.
@@ -1024,6 +1031,7 @@ private func testMalformedInputNeverProducesAVIF() throws {
 }
 
 private func testMalformedAVIFInputCorpusIsSafe() throws {
+  guard AVIFInspector.isEncodingAvailable else { return }
   // The PNG corpus test covers PNG inputs. AVIF is also an accepted input type,
   // so a mutated AVIF container must fail closed the same way: no unverified
   // output, and the input left byte-identical.
@@ -1034,11 +1042,7 @@ private func testMalformedAVIFInputCorpusIsSafe() throws {
   let seedPNG = directory.appendingPathComponent("seed.png")
   try makeImageData(type: "public.png" as CFString, metadata: false).write(to: seedPNG)
   let seedAVIF = directory.appendingPathComponent("seed.avif")
-  do {
-    _ = try sanitizer.writeCanonicalAVIF(from: seedPNG, to: seedAVIF, quality: .high)
-  } catch let error as MetaShieldError where error == .avifEncodingUnavailable {
-    return  // Nothing to mutate where the encoder does not exist.
-  }
+  _ = try sanitizer.writeCanonicalAVIF(from: seedPNG, to: seedAVIF, quality: .high)
   let clean = Array(try Data(contentsOf: seedAVIF))
 
   var seed: UInt64 = 0xD1B5_4A32_D192_ED03
