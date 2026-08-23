@@ -30,6 +30,8 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
   private let downloadUpdateButton = NSButton(
     title: "검증된 DMG 받기…", target: nil, action: nil)
   private let openReleaseButton = NSButton(title: "릴리스 페이지", target: nil, action: nil)
+  private let serviceSettingsButton = NSButton(
+    title: "Finder 메뉴 설정 열기…", target: nil, action: nil)
   private let qualityLabel = NSTextField(labelWithString: "")
   private let qualitySlider = NSSlider()
   private var pendingUpdate: ReleaseVersion?
@@ -108,6 +110,13 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     openReleaseButton.isHidden = true
     openReleaseButton.setAccessibilityHelp("기본 브라우저에서 MetaShield 릴리스 페이지를 엽니다.")
 
+    serviceSettingsButton.target = self
+    serviceSettingsButton.action = #selector(openServiceSettings)
+    serviceSettingsButton.bezelStyle = .rounded
+    serviceSettingsButton.setAccessibilityHelp(
+      "시스템 설정의 서비스 목록을 엽니다. 거기서 MetaShield의 Finder 우클릭 메뉴를 항목별로 "
+        + "켜고 끌 수 있습니다. AVIF 메뉴는 처음에 꺼져 있습니다.")
+
     // The compression level for the "AVIF로 변환 및 압축" command. It changes how
     // small the new file is; it never changes whether a file is replaced.
     qualitySlider.target = self
@@ -152,7 +161,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     actionRow.spacing = 10
     actionRow.alignment = .centerY
 
-    let qualityRow = NSStackView(views: [qualityLabel, qualitySlider])
+    let qualityRow = NSStackView(views: [qualityLabel, qualitySlider, serviceSettingsButton])
     qualityRow.orientation = .horizontal
     qualityRow.spacing = 10
     qualityRow.alignment = .centerY
@@ -279,6 +288,12 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
   private func clearPhotoPermissionPicker() {
     photoPermissionPicker = nil
     photoPermissionProvider = nil
+  }
+
+  @objc private func openServiceSettings() {
+    ServiceMenuSetup.openSystemServicesSettings()
+    showStatus(
+      "시스템 설정의 서비스 목록에서 MetaShield 항목을 켜고 끌 수 있습니다.", isError: false)
   }
 
   @objc private func changeAVIFQuality() {

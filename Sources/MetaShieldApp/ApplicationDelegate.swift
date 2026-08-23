@@ -24,6 +24,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate,
       ?? false
 
     LegacyQuickActionCleaner.run()
+    // Must run before the services are registered below, so a fresh install
+    // shows only the scrubbing command in Finder.
+    ServiceMenuSetup.seedDefaultsIfFirstLaunch()
 
     let controller = MainViewController()
     let window = NSWindow(

@@ -183,9 +183,22 @@ Services > AVIF로 변환 및 압축 (메타데이터 제거)      (new file, or
 
 Each menu item names exactly what it does. The compression level used by the
 third item is a slider in the main window; it changes how small the new file is
-and never changes whether a file is replaced. Services cannot be added or removed
-at runtime — they are declared in the app bundle — so unwanted entries are hidden
-in System Settings > Keyboard > Keyboard Shortcuts > Services.
+and never changes whether a file is replaced.
+
+**A fresh install shows only the first item.** The two AVIF commands start hidden
+and are opt-in, because they do a different job from what most people install
+MetaShield for, and because writing AVIF needs macOS 26 anyway. The main window's
+`Finder 메뉴 설정 열기…` button opens the Services list in System Settings, where
+each command is shown or hidden with Apple's own checkboxes.
+
+macOS enables every service an app declares and `Info.plist` cannot mark one as
+off by default, so that initial state is seeded once — at first launch only — by
+writing the same `pbs` preference System Settings itself uses. It never runs
+again, so a command the user later enables is never turned back off, and an
+existing entry is never overwritten. If that undocumented format ever changes the
+write simply does nothing: all three items stay visible, exactly as in earlier
+releases, and remain removable from System Settings. The app keeps no checkbox of
+its own for this, so there is no stored state that can disagree with reality.
 
 The host application decides whether it exposes a selected image to macOS Services.
 Dragging to MetaShield is the reliable fallback for Photos, browsers, and other apps.
