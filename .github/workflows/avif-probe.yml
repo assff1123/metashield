@@ -1,0 +1,20 @@
+name: AVIF probe
+on: workflow_dispatch
+jobs:
+  probe:
+    strategy:
+      matrix:
+        os: [macos-14, macos-15, macos-26]
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Report
+        run: |
+          sw_vers
+          cat > /tmp/p.swift <<'S'
+          import ImageIO
+          let d = CGImageDestinationCopyTypeIdentifiers() as! [String]
+          print("AVIF 인코딩:", d.contains("public.avif") ? "가능" : "불가")
+          print("HEIC 인코딩:", d.contains("public.heic") ? "가능" : "불가")
+          S
+          swift /tmp/p.swift
