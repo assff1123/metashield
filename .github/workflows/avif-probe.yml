@@ -1,5 +1,5 @@
 name: AVIF probe
-on: workflow_dispatch
+on: push
 jobs:
   probe:
     strategy:
