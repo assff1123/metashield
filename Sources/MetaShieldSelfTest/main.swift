@@ -1186,6 +1186,47 @@ private func testUpdateFeedRollbackDetection() throws {
     "설치된 버전이 기억의 하한이 되어야 합니다.")
 }
 
+private func testReadOnlyDirectoryNeverDamagesOriginal() throws {
+  // Staging a replacement can fail when the original's directory is closed to
+  // us. Whatever the outcome, the original must be either fully replaced or
+  // completely untouched — never truncated, and never left as a stray temp file.
+  let directory = try makeTemporaryDirectory()
+  defer {
+    try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+    try? FileManager.default.removeItem(at: directory)
+  }
+  let source = directory.appendingPathComponent("locked.png")
+  let original = try makeImageData(type: "public.png" as CFString, metadata: true)
+  try original.write(to: source)
+
+  // Read and execute only: the file stays writable, the directory does not.
+  try FileManager.default.setAttributes(
+    [.posixPermissions: 0o500], ofItemAtPath: directory.path)
+
+  let sanitizer = ImageSanitizer()
+  var replaced = false
+  do {
+    _ = try sanitizer.sanitizePNGInPlace(at: source)
+    replaced = true
+  } catch {
+    // Any failure is acceptable here; silent corruption is not.
+  }
+
+  try FileManager.default.setAttributes(
+    [.posixPermissions: 0o755], ofItemAtPath: directory.path)
+
+  let after = try Data(contentsOf: source)
+  if replaced {
+    _ = try sanitizer.verifyCanonicalPNG(at: source)
+  } else {
+    try expect(after == original, "실패한 원위치 교체가 원본을 훼손했습니다.")
+  }
+
+  let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    .filter { $0.hasPrefix(".metashield-") }
+  try expect(leftovers.isEmpty, "임시 파일이 남았습니다: \(leftovers)")
+}
+
 let tests: [(String, () throws -> Void)] = [
   ("PNG 메타데이터·알파·xattr 제거", testAggressiveSanitization),
   ("알파 하위 비트 은닉 payload 제거", testAlphaLowBitPayloadIsDestroyed),
@@ -1218,6 +1259,7 @@ let tests: [(String, () throws -> Void)] = [
   ("변조 AVIF 입력 코퍼스 안전", testMalformedAVIFInputCorpusIsSafe),
   ("적대적 파일명이 대상 폴더를 벗어나지 않음", testHostileSuggestedNamesStayInsideDirectory),
   ("릴리스 되돌림 감지", testUpdateFeedRollbackDetection),
+  ("쓰기 불가 폴더에서 원본 불변", testReadOnlyDirectoryNeverDamagesOriginal),
 ]
 
 do {

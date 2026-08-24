@@ -507,6 +507,20 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
           do {
             let report = try sanitizer.sanitizePNGInPlace(at: url)
             successes.append(report.url)
+          } catch MetaShieldError.inPlaceReplacementUnavailable {
+            // Replacing this original could not be made crash-safe. Leave it
+            // alone and write a verified copy instead of weakening the promise.
+            do {
+              let destinationDirectory = try Self.automaticOutputDirectory(for: url)
+              let destination = OutputNaming.uniqueCleanPNGURL(
+                in: destinationDirectory,
+                baseName: url.deletingPathExtension().lastPathComponent
+              )
+              let report = try sanitizer.writeCanonicalPNG(from: url, to: destination)
+              successes.append(report.url)
+            } catch {
+              failures.append(ProcessingFailure(url: url, error: error))
+            }
           } catch {
             failures.append(ProcessingFailure(url: url, error: error))
           }

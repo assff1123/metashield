@@ -66,8 +66,8 @@ public final class ImageSanitizer: Sendable {
     let canonical = try makeCanonicalPNG(from: standardizedURL)
     let inspection = try PNGInspector.verifyCanonical(canonical)
 
-    let directory = standardizedURL.deletingLastPathComponent()
-    let tempURL = directory.appendingPathComponent(".metashield-\(UUID().uuidString).png")
+    let staged = try stageReplacement(besideOriginalAt: standardizedURL, pathExtension: "png")
+    let tempURL = staged.url
 
     do {
       try writeTemporaryDataSecurely(canonical, to: tempURL, permissions: 0o600)
@@ -86,7 +86,7 @@ public final class ImageSanitizer: Sendable {
         to: tempURL
       )
       try verifyUnchanged(originalFileState, at: standardizedURL)
-      try atomicReplace(source: tempURL, destination: standardizedURL)
+      try commitReplacement(staged, destination: standardizedURL)
 
       return SanitizationReport(
         url: standardizedURL,
@@ -98,6 +98,9 @@ public final class ImageSanitizer: Sendable {
       )
     } catch {
       try? FileManager.default.removeItem(at: tempURL)
+      if let stagingDirectory = staged.stagingDirectory {
+        try? FileManager.default.removeItem(at: stagingDirectory)
+      }
       throw error
     }
   }
@@ -563,6 +566,104 @@ public final class ImageSanitizer: Sendable {
     let modifiedNanoseconds: Int
     let changedSeconds: Int
     let changedNanoseconds: Int
+  }
+
+  /// Where a verified replacement waits before it takes the original's place.
+  ///
+  /// The preferred home is the original's own directory, because a `rename`
+  /// within one directory is atomic: a crash leaves either the old file or the
+  /// new one, never a partial file. A sandboxed app is granted the *file* the
+  /// user opened, not its directory, so that write can be refused. In that case
+  /// the replacement is staged in a private directory and committed with
+  /// `replaceItemAt`, which is only equivalent while both live on one volume.
+  private struct StagedReplacement {
+    let url: URL
+    let isBesideOriginal: Bool
+    /// Non-nil only for private staging, so the directory can be removed.
+    let stagingDirectory: URL?
+  }
+
+  private func stageReplacement(
+    besideOriginalAt original: URL,
+    pathExtension: String
+  ) throws -> StagedReplacement {
+    let directory = original.deletingLastPathComponent()
+    let besideURL = directory.appendingPathComponent(
+      ".metashield-\(UUID().uuidString).\(pathExtension)")
+
+    // Probe the preferred location by creating the file the write will use.
+    let descriptor = besideURL.path.withCString {
+      open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
+    }
+    if descriptor >= 0 {
+      close(descriptor)
+      // writeTemporaryDataSecurely re-creates it with O_EXCL, so clear the probe.
+      try? FileManager.default.removeItem(at: besideURL)
+      return StagedReplacement(url: besideURL, isBesideOriginal: true, stagingDirectory: nil)
+    }
+    let probeErrno = errno
+    guard probeErrno == EACCES || probeErrno == EPERM || probeErrno == EROFS else {
+      throw MetaShieldError.fileOperationFailed(String(cString: strerror(probeErrno)))
+    }
+
+    // The directory is closed to us. Stage privately and commit with
+    // replaceItemAt, but only if that still replaces within one volume.
+    let stagingDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("MetaShieldStaging-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: stagingDirectory,
+      withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700]
+    )
+    do {
+      guard try deviceIdentifier(of: stagingDirectory) == deviceIdentifier(of: directory) else {
+        // A cross-volume replaceItemAt degrades to copy-and-delete, which can
+        // lose the original on a crash. Refuse rather than weaken the promise;
+        // the caller falls back to writing a separate clean copy.
+        throw MetaShieldError.inPlaceReplacementUnavailable
+      }
+      return StagedReplacement(
+        url: stagingDirectory.appendingPathComponent("replacement.\(pathExtension)"),
+        isBesideOriginal: false,
+        stagingDirectory: stagingDirectory
+      )
+    } catch {
+      try? FileManager.default.removeItem(at: stagingDirectory)
+      throw error
+    }
+  }
+
+  private func commitReplacement(_ staged: StagedReplacement, destination: URL) throws {
+    defer {
+      if let stagingDirectory = staged.stagingDirectory {
+        try? FileManager.default.removeItem(at: stagingDirectory)
+      }
+    }
+    if staged.isBesideOriginal {
+      try atomicReplace(source: staged.url, destination: destination)
+      return
+    }
+    // Keep the attributes already applied to the staged file rather than letting
+    // the original's metadata win, because those were copied from the original
+    // deliberately and verified.
+    _ = try FileManager.default.replaceItemAt(
+      destination,
+      withItemAt: staged.url,
+      backupItemName: nil,
+      options: [.usingNewMetadataOnly]
+    )
+    // Note for a future sandbox attempt: macOS quarantines a sandboxed
+    // process's output and refuses to let it remove that marker, so a sandboxed
+    // build leaves `com.apple.quarantine` on the replaced file. Measured, not
+    // assumed — removing it here was tried and had no effect.
+  }
+
+  private func deviceIdentifier(of url: URL) throws -> dev_t {
+    var value = stat()
+    guard url.path.withCString({ stat($0, &value) }) == 0 else {
+      throw MetaShieldError.fileOperationFailed(String(cString: strerror(errno)))
+    }
+    return value.st_dev
   }
 
   private func inPlaceFileState(at url: URL) throws -> InPlaceFileState {

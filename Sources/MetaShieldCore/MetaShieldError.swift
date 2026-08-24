@@ -10,6 +10,7 @@ public enum MetaShieldError: LocalizedError, Equatable {
   case hardLinkedFileNotAllowed
   case sourceChangedDuringProcessing
   case managedLocationNotAllowed
+  case inPlaceReplacementUnavailable
   case invalidDimensions
   case bitmapAllocationFailed
   case imageEncodingFailed
@@ -37,6 +38,8 @@ public enum MetaShieldError: LocalizedError, Equatable {
       return "여러 파일명이 같은 원본을 가리키는 하드 링크는 안전한 원본 교체를 위해 처리하지 않습니다."
     case .sourceChangedDuringProcessing:
       return "처리 중 원본이 다른 앱에서 변경되어 안전을 위해 덮어쓰지 않았습니다."
+    case .inPlaceReplacementUnavailable:
+      return "이 위치의 원본은 안전하게 교체할 수 없어 정리된 사본을 대신 만듭니다."
     case .managedLocationNotAllowed:
       return "사진 보관함 또는 임시 관리 경로의 파일은 직접 덮어쓸 수 없습니다. 사진 앱의 공유 메뉴에서 처리하세요."
     case .invalidDimensions:

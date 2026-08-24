@@ -46,9 +46,12 @@ public enum ImageInputLocationPolicy {
     {
       return false
     }
-    return FileManager.default.isWritableFile(
-      atPath: url.deletingLastPathComponent().standardizedFileURL.path
-    )
+    // Directory writability is deliberately not required here. A sandboxed app
+    // is granted the file the user opened but not its directory, and the
+    // sanitizer knows how to stage a replacement privately in that case. It
+    // throws `inPlaceReplacementUnavailable` when even that is unsafe, and the
+    // caller falls back to writing a separate clean copy.
+    return FileManager.default.isWritableFile(atPath: url.path)
   }
 
   private static func normalizedPath(_ url: URL) -> String {
