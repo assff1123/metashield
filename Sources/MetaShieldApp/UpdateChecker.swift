@@ -35,6 +35,10 @@ enum UpdateChecker {
   enum Outcome: Sendable {
     case upToDate(current: ReleaseVersion)
     case updateAvailable(latest: ReleaseVersion)
+    /// The release host named a version older than one already seen. Shown as a
+    /// warning rather than silently accepted, because that is what hiding a
+    /// security fix would look like from here.
+    case regressionSuspected(highestSeen: ReleaseVersion, reported: ReleaseVersion)
     case failed
   }
 
@@ -45,6 +49,7 @@ enum UpdateChecker {
     string: "https://api.github.com/repos/assff1123/metashield/releases/latest")!
   private static let enabledKey = "kr.metashield.app.updateCheckEnabled"
   private static let lastCheckKey = "kr.metashield.app.lastUpdateCheck"
+  private static let highestSeenVersionKey = "kr.metashield.app.highestSeenVersion"
   private static let checkInterval: TimeInterval = 24 * 60 * 60
   private static let backgroundDeadline: TimeInterval = 8
   nonisolated private static let maximumResponseByteCount = 512 * 1_024
@@ -52,6 +57,21 @@ enum UpdateChecker {
   static var isEnabled: Bool {
     get { UserDefaults.standard.bool(forKey: enabledKey) }
     set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
+  }
+
+  /// The newest version this copy has ever been told about. Never lowered, so a
+  /// single poisoned answer cannot erase the evidence that detects the next one.
+  private static var highestSeenVersion: ReleaseVersion? {
+    get {
+      guard let text = UserDefaults.standard.string(forKey: highestSeenVersionKey) else {
+        return nil
+      }
+      return ReleaseVersion(tag: text)
+    }
+    set {
+      guard let newValue else { return }
+      UserDefaults.standard.set(String(describing: newValue), forKey: highestSeenVersionKey)
+    }
   }
 
   static var currentVersion: ReleaseVersion? {
@@ -388,8 +408,17 @@ enum UpdateChecker {
           completion(.failed)
           return
         }
-        completion(
-          latest > current ? .updateAvailable(latest: latest) : .upToDate(current: current))
+        let seen = highestSeenVersion
+        highestSeenVersion = UpdateFeedPolicy.updatedHighestSeen(
+          reported: latest, current: current, highestSeen: seen)
+        switch UpdateFeedPolicy.judge(reported: latest, current: current, highestSeen: seen) {
+        case .updateAvailable(let version):
+          completion(.updateAvailable(latest: version))
+        case .upToDate(let version):
+          completion(.upToDate(current: version))
+        case .regressionSuspected(let highest, let reported):
+          completion(.regressionSuspected(highestSeen: highest, reported: reported))
+        }
       }
     }
     let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)

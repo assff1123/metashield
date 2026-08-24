@@ -1138,6 +1138,54 @@ private func testHostileSuggestedNamesStayInsideDirectory() throws {
   }
 }
 
+private func testUpdateFeedRollbackDetection() throws {
+  func v(_ major: Int, _ minor: Int, _ patch: Int) -> ReleaseVersion {
+    ReleaseVersion(major: major, minor: minor, patch: patch)
+  }
+
+  // Normal cases still behave exactly as before.
+  try expect(
+    UpdateFeedPolicy.judge(reported: v(0, 4, 0), current: v(0, 3, 9), highestSeen: nil)
+      == .updateAvailable(latest: v(0, 4, 0)),
+    "새 버전을 알리지 못했습니다.")
+  try expect(
+    UpdateFeedPolicy.judge(reported: v(0, 3, 9), current: v(0, 3, 9), highestSeen: v(0, 3, 9))
+      == .upToDate(current: v(0, 3, 9)),
+    "최신 상태를 잘못 판정했습니다.")
+  // An older tag with nothing remembered is just "up to date", not an alarm:
+  // a fresh install must not accuse a healthy host.
+  try expect(
+    UpdateFeedPolicy.judge(reported: v(0, 3, 1), current: v(0, 3, 9), highestSeen: nil)
+      == .upToDate(current: v(0, 3, 9)),
+    "기억이 없는 상태에서 과거 태그를 의심으로 처리했습니다.")
+
+  // The host regresses after this copy has already seen a newer release.
+  try expect(
+    UpdateFeedPolicy.judge(reported: v(0, 3, 8), current: v(0, 3, 9), highestSeen: v(0, 4, 0))
+      == .regressionSuspected(highestSeen: v(0, 4, 0), reported: v(0, 3, 8)),
+    "릴리스 되돌림을 감지하지 못했습니다.")
+  // Even when the reported version would otherwise look like an upgrade.
+  try expect(
+    UpdateFeedPolicy.judge(reported: v(0, 3, 9), current: v(0, 3, 8), highestSeen: v(0, 4, 0))
+      == .regressionSuspected(highestSeen: v(0, 4, 0), reported: v(0, 3, 9)),
+    "업그레이드처럼 보이는 되돌림을 놓쳤습니다.")
+
+  // A poisoned answer must never lower the high-water mark.
+  try expect(
+    UpdateFeedPolicy.updatedHighestSeen(
+      reported: v(0, 3, 1), current: v(0, 3, 9), highestSeen: v(0, 4, 0)) == v(0, 4, 0),
+    "되돌림 응답이 기억을 낮췄습니다.")
+  try expect(
+    UpdateFeedPolicy.updatedHighestSeen(
+      reported: v(0, 5, 0), current: v(0, 3, 9), highestSeen: v(0, 4, 0)) == v(0, 5, 0),
+    "새 최고 버전을 기억하지 못했습니다.")
+  // Installing a build newer than anything the feed ever showed also counts.
+  try expect(
+    UpdateFeedPolicy.updatedHighestSeen(
+      reported: v(0, 3, 9), current: v(0, 9, 9), highestSeen: nil) == v(0, 9, 9),
+    "설치된 버전이 기억의 하한이 되어야 합니다.")
+}
+
 let tests: [(String, () throws -> Void)] = [
   ("PNG 메타데이터·알파·xattr 제거", testAggressiveSanitization),
   ("알파 하위 비트 은닉 payload 제거", testAlphaLowBitPayloadIsDestroyed),
@@ -1169,6 +1217,7 @@ let tests: [(String, () throws -> Void)] = [
   ("변조 입력에서 AVIF 미생성·원본 안전", testMalformedInputNeverProducesAVIF),
   ("변조 AVIF 입력 코퍼스 안전", testMalformedAVIFInputCorpusIsSafe),
   ("적대적 파일명이 대상 폴더를 벗어나지 않음", testHostileSuggestedNamesStayInsideDirectory),
+  ("릴리스 되돌림 감지", testUpdateFeedRollbackDetection),
 ]
 
 do {

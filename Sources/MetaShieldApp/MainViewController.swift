@@ -404,6 +404,16 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
       pendingUpdate = nil
       downloadUpdateButton.isHidden = true
       openReleaseButton.isHidden = true
+    case .regressionSuspected(let highestSeen, let reported):
+      // Never offer a download here. This is what hiding a security fix would
+      // look like from the app's side, so say so and let the user check.
+      updateStatusLabel.stringValue =
+        "주의: 이전에 \(highestSeen) 버전을 확인했는데 지금은 \(reported)이(가) 최신이라고 합니다. "
+        + "릴리스 페이지에서 직접 확인하세요."
+      updateStatusLabel.textColor = .systemRed
+      pendingUpdate = nil
+      downloadUpdateButton.isHidden = true
+      openReleaseButton.isHidden = false
     case .failed:
       updateStatusLabel.stringValue = "새 버전을 확인하지 못했습니다."
       updateStatusLabel.textColor = .secondaryLabelColor
