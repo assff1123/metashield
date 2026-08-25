@@ -13,7 +13,7 @@ off-by-default GitHub release check; image data and metadata are never transmitt
 MetaShield was developed with AI coding assistance. The sanitizing core, the file
 replacement path, and the update check were reviewed by a human against the threat
 model in `AUDIT.md`, and every claim in the guarantee boundary below is backed by an
-automated self test (`swift run -c release metashield-self-test`, 24/24). No
+automated self test (`swift run -c release metashield-self-test`, 32/32). No
 third-party code is vendored: the app links only Apple system frameworks and the
 system zlib.
 
