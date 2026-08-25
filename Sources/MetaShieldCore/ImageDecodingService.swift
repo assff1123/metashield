@@ -18,6 +18,17 @@ import Foundation
     request: ImageDecodingRequest,
     withReply reply: @escaping (ImageDecodingResponse?, String?) -> Void
   )
+
+  /// Checks that an already-encoded file is a clean MetaShield result.
+  ///
+  /// This also decodes, so it runs here rather than in the app for the same
+  /// reason: `--verify` is pointed at arbitrary files the user did not
+  /// necessarily produce.
+  func verifyImage(
+    handle: FileHandle,
+    request: ImageDecodingRequest,
+    withReply reply: @escaping (ImageDecodingResponse?, String?) -> Void
+  )
 }
 
 /// What the app asks the isolated decoder to produce.

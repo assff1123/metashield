@@ -41,6 +41,10 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
   private var processingCompletion: ((Bool) -> Void)?
   private var temporaryInputDirectories: [URL] = []
   private var activePhotoImportToken: UUID?
+  /// Set once PhotoKit owns the transaction, after which no timer may declare
+  /// failure: the import can still succeed and reporting otherwise invites a
+  /// duplicate.
+  private var hasStartedPhotoCommit = false
   private var photoPermissionPicker: NSSharingServicePicker?
   private var photoPermissionProvider: NSItemProvider?
 
@@ -651,22 +655,28 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     let token = UUID()
     activePhotoImportToken = token
 
-    // TCC and Photos callbacks are system services. They normally respond
-    // immediately but must not leave a headless file-open process alive
-    // forever if either service stops replying.
-    DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
-      guard let self, self.activePhotoImportToken == token else { return }
-      let error = NSError(
-        domain: "kr.metashield.app.photos",
-        code: 3,
-        userInfo: [NSLocalizedDescriptionKey: "사진 보관함이 60초 안에 응답하지 않았습니다."]
-      )
-      self.completePhotoImport(
-        token: token,
-        restoreAccessoryPolicy: needsVisiblePermissionPrompt,
-        successes: successes,
-        failures: failures + [ProcessingFailure(url: sourceForError, error: error)]
-      )
+    // The permission prompt can sit unanswered indefinitely, so that phase is
+    // bounded. The import itself is not: once `performChanges` has started,
+    // PhotoKit cannot be cancelled, and declaring failure early would report a
+    // failure for a photo that still lands — leading the user to retry and
+    // create a duplicate. The commit therefore waits for its real callback.
+    if authorizationStatus == .notDetermined {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+        guard let self, self.activePhotoImportToken == token, !self.hasStartedPhotoCommit else {
+          return
+        }
+        let error = NSError(
+          domain: "kr.metashield.app.photos",
+          code: 3,
+          userInfo: [NSLocalizedDescriptionKey: "사진 권한 요청이 60초 안에 응답하지 않았습니다."]
+        )
+        self.completePhotoImport(
+          token: token,
+          restoreAccessoryPolicy: needsVisiblePermissionPrompt,
+          successes: successes,
+          failures: failures + [ProcessingFailure(url: sourceForError, error: error)]
+        )
+      }
     }
 
     switch authorizationStatus {
@@ -765,6 +775,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     failures: [ProcessingFailure],
     sourceForError: URL
   ) {
+    hasStartedPhotoCommit = true
     Self.performPhotoLibraryChanges(urls) { [weak self] imported, error in
       guard let self, self.activePhotoImportToken == token else { return }
       if imported {
@@ -829,6 +840,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
   ) {
     guard activePhotoImportToken == token else { return }
     activePhotoImportToken = nil
+    hasStartedPhotoCommit = false
     if restoreAccessoryPolicy {
       NSApp.setActivationPolicy(.accessory)
     }

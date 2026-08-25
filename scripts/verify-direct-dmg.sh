@@ -65,13 +65,32 @@ require_universal "$APP_PATH/Contents/XPCServices/MetaShieldDecodeService.xpc/Co
 require_universal "$APP_PATH/Contents/PlugIns/MetaShield Share.appex/Contents/MacOS/MetaShieldShare"
 /usr/bin/plutil -lint "$APP_PATH/Contents/Info.plist"
 /usr/bin/plutil -lint "$APP_PATH/Contents/PlugIns/MetaShield Share.appex/Contents/Info.plist"
+DECODE_PATH="$APP_PATH/Contents/XPCServices/MetaShieldDecodeService.xpc"
+/usr/bin/plutil -lint "$DECODE_PATH/Contents/Info.plist"
+
+# The decoder is a security boundary, so its packaging is checked rather than
+# assumed: exactly one entitlement, and a version that matches the host.
+DECODE_ENTITLEMENTS=$(/usr/bin/codesign -d --entitlements - --xml "$DECODE_PATH" 2>/dev/null \
+    | /usr/bin/plutil -convert json -o - - \
+    | /usr/bin/python3 -c 'import json,sys; print(",".join(sorted(json.load(sys.stdin).keys())))')
+if [[ "$DECODE_ENTITLEMENTS" != "com.apple.security.app-sandbox" ]]; then
+    echo "디코드 서비스의 entitlement가 app-sandbox 하나가 아닙니다: $DECODE_ENTITLEMENTS" >&2
+    exit 1
+fi
+echo "디코드 서비스 entitlement 확인: $DECODE_ENTITLEMENTS"
 
 HOST_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")
 SHARE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/PlugIns/MetaShield Share.appex/Contents/Info.plist")
 HOST_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")
 SHARE_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/PlugIns/MetaShield Share.appex/Contents/Info.plist")
+DECODE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$DECODE_PATH/Contents/Info.plist")
+DECODE_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$DECODE_PATH/Contents/Info.plist")
 if [[ "$HOST_VERSION:$HOST_BUILD" != "$SHARE_VERSION:$SHARE_BUILD" ]]; then
     echo "DMG 안의 앱·공유 확장 버전이 일치하지 않습니다." >&2
+    exit 1
+fi
+if [[ "$HOST_VERSION:$HOST_BUILD" != "$DECODE_VERSION:$DECODE_BUILD" ]]; then
+    echo "DMG 안의 앱·디코드 서비스 버전이 일치하지 않습니다." >&2
     exit 1
 fi
 

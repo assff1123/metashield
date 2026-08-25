@@ -1,6 +1,8 @@
 import AppKit
 
 final class DropZoneView: NSView {
+  static let maximumPasteboardByteCount = 256 * 1_024 * 1_024
+
   var onFileURLs: (([URL]) -> Void)?
   var onImageData: ((Data) -> Void)?
   var onFilePromises: (([NSFilePromiseReceiver]) -> Void)?
@@ -157,6 +159,7 @@ final class DropZoneView: NSView {
       return true
     }
     if let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff) {
+      guard data.count <= Self.maximumPasteboardByteCount else { return false }
       onImageData?(data)
       return true
     }

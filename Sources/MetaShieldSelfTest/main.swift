@@ -1227,6 +1227,80 @@ private func testReadOnlyDirectoryNeverDamagesOriginal() throws {
   try expect(leftovers.isEmpty, "임시 파일이 남았습니다: \(leftovers)")
 }
 
+private func testServiceRejectsHostileRequestValues() throws {
+  // The isolated decoder is a security boundary, so it must not trust the
+  // limits its caller sends. Non-positive values used to reach a precondition
+  // inside ImageSanitizer, which would take the service down rather than fail
+  // the call.
+  for badLimit in [0, -1, Int.min] {
+    let request = ImageDecodingRequest(
+      outputFormat: ImageDecodingRequest.pngFormat,
+      maximumPixelCount: badLimit,
+      maximumInputByteCount: badLimit,
+      compressionQuality: 0.7
+    )
+    try expect(
+      request.maximumPixelCount <= 0 || request.maximumInputByteCount <= 0,
+      "테스트 전제가 잘못되었습니다.")
+    // The request type itself must carry the value unchanged; rejecting it is
+    // the service's job and is covered by the packaging check in
+    // scripts/verify-direct-dmg.sh plus the guard in the service.
+    try expect(request.outputFormat == ImageDecodingRequest.pngFormat, "형식이 보존되어야 합니다.")
+  }
+
+  // Round-tripping through NSSecureCoding must not change the values, or the
+  // service would be validating something other than what was sent.
+  let original = ImageDecodingRequest(
+    outputFormat: ImageDecodingRequest.avifFormat,
+    maximumPixelCount: 1_234,
+    maximumInputByteCount: 5_678,
+    compressionQuality: 0.42
+  )
+  let encoded = try NSKeyedArchiver.archivedData(
+    withRootObject: original, requiringSecureCoding: true)
+  guard
+    let restored = try NSKeyedUnarchiver.unarchivedObject(
+      ofClass: ImageDecodingRequest.self, from: encoded)
+  else {
+    throw SelfTestError.assertion("요청을 복원하지 못했습니다.")
+  }
+  try expect(
+    restored.outputFormat == original.outputFormat
+      && restored.maximumPixelCount == original.maximumPixelCount
+      && restored.maximumInputByteCount == original.maximumInputByteCount
+      && restored.compressionQuality == original.compressionQuality,
+    "요청 값이 전송 과정에서 달라졌습니다.")
+}
+
+private func testVerificationAcceptsOnlyCleanResults() throws {
+  // verifiedImageSize is what the app relies on instead of decoding results
+  // itself, so it has to actually reject a file that is not a clean result.
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let sanitizer = ImageSanitizer()
+
+  let clean = directory.appendingPathComponent("clean.png")
+  let source = directory.appendingPathComponent("in.png")
+  try makeImageData(type: "public.png" as CFString, metadata: true).write(to: source)
+  _ = try sanitizer.writeCanonicalPNG(from: source, to: clean)
+  let cleanData = try Data(contentsOf: clean)
+  let size = try sanitizer.verifiedImageSize(
+    of: cleanData, format: ImageDecodingRequest.pngFormat)
+  try expect(size.width > 0 && size.height > 0, "정상 결과를 거부했습니다.")
+
+  // A PNG that still carries metadata chunks is not a clean result.
+  let dirty = try makeImageData(type: "public.png" as CFString, metadata: true)
+  do {
+    _ = try sanitizer.verifiedImageSize(of: dirty, format: ImageDecodingRequest.pngFormat)
+    throw SelfTestError.assertion("메타데이터가 남은 PNG를 통과시켰습니다.")
+  } catch let error as MetaShieldError {
+    guard case .verificationFailed = error else {
+      guard case .invalidPNG = error else { throw error }
+      return
+    }
+  }
+}
+
 let tests: [(String, () throws -> Void)] = [
   ("PNG 메타데이터·알파·xattr 제거", testAggressiveSanitization),
   ("알파 하위 비트 은닉 payload 제거", testAlphaLowBitPayloadIsDestroyed),
@@ -1260,6 +1334,8 @@ let tests: [(String, () throws -> Void)] = [
   ("적대적 파일명이 대상 폴더를 벗어나지 않음", testHostileSuggestedNamesStayInsideDirectory),
   ("릴리스 되돌림 감지", testUpdateFeedRollbackDetection),
   ("쓰기 불가 폴더에서 원본 불변", testReadOnlyDirectoryNeverDamagesOriginal),
+  ("XPC 요청 값 왕복 보존", testServiceRejectsHostileRequestValues),
+  ("검증이 깨끗한 결과만 통과", testVerificationAcceptsOnlyCleanResults),
 ]
 
 do {

@@ -90,6 +90,9 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
   private var setupMarkerLoadProgress: Progress?
   private var activePhotoImportToken: UUID?
   private var activePhotoImportDirectory: URL?
+  /// Once true, no timer may declare failure or remove the staged files:
+  /// PhotoKit is committing and may still succeed.
+  private var hasStartedPhotoCommit = false
 
   override func loadView() {
     view = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 260))
@@ -277,7 +280,8 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
     setupMarkerLoadProgress?.cancel()
     setupMarkerLoadProgress = nil
     activePhotoImportToken = nil
-    if let directory = activePhotoImportDirectory {
+    // Never pull files out from under an import that PhotoKit has already begun.
+    if !hasStartedPhotoCommit, let directory = activePhotoImportDirectory {
       try? FileManager.default.removeItem(at: directory)
       activePhotoImportDirectory = nil
     }
@@ -477,17 +481,25 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
     let token = UUID()
     activePhotoImportToken = token
     activePhotoImportDirectory = temporaryDirectory
-    DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
-      guard let self, self.activePhotoImportToken == token else { return }
-      self.completePhotoImport(
-        token: token,
-        temporaryDirectory: temporaryDirectory,
-        result: .failure(Self.photoLibraryError("사진 보관함이 60초 안에 응답하지 않았습니다.")),
-        count: urls.count
-      )
+    let authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+    // Only the permission prompt is bounded. Once PhotoKit owns the transaction
+    // it cannot be cancelled, and timing out would both misreport the result and
+    // delete the files it is still reading.
+    if authorizationStatus == .notDetermined {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+        guard let self, self.activePhotoImportToken == token, !self.hasStartedPhotoCommit else {
+          return
+        }
+        self.completePhotoImport(
+          token: token,
+          temporaryDirectory: temporaryDirectory,
+          result: .failure(Self.photoLibraryError("사진 권한 요청이 60초 안에 응답하지 않았습니다.")),
+          count: urls.count
+        )
+      }
     }
 
-    switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
+    switch authorizationStatus {
     case .authorized, .limited:
       performPhotoImport(urls, token: token, temporaryDirectory: temporaryDirectory)
     case .notDetermined:
@@ -528,6 +540,7 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
     // From here Photos owns the transaction and it cannot be safely cancelled.
     // Prevent a misleading cancel click during commit.
     cancelButton.isEnabled = false
+    hasStartedPhotoCommit = true
     showStatus("정리된 이미지를 사진 보관함에 추가하는 중…")
     Self.performPhotoLibraryChanges(urls) { [weak self] success, error in
       guard let self, self.activePhotoImportToken == token else { return }
@@ -583,6 +596,7 @@ final class MetaShieldShareViewController: NSViewController, @unchecked Sendable
     guard activePhotoImportToken == token else { return }
     activePhotoImportToken = nil
     activePhotoImportDirectory = nil
+    hasStartedPhotoCommit = false
     try? FileManager.default.removeItem(at: temporaryDirectory)
     guard !cancellationState.isCancelled else { return }
     switch result {

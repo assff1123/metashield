@@ -29,9 +29,26 @@ network, or device access of any kind. The app hands it a read-only descriptor
 and gets back encoded bytes; it keeps the file handling, verification, and
 replacement for itself, because those need privileges the decoder must not have.
 
+Verification decodes too, so it happens on the same side of the boundary. The
+service checks its own output before returning it, and the app then does only
+non-decoding checks: the pure-Swift `PNGInspector` structural parse, byte counts,
+and a byte-for-byte comparison of what reached the disk. The app does not open
+untrusted or service-returned bytes with ImageIO at all — doing so would give a
+compromised decoder the same bug to exploit a second time, outside the sandbox.
+
 There is no silent fallback. If the service cannot be reached the request fails
 rather than quietly decoding in the app, since dropping the isolation exactly
 when something is already wrong is the worst possible moment for it.
+
+The service does not trust its caller either. It enforces its own absolute
+ceilings (40 MP, 256 MiB), measures the descriptor with `fstat` before reading
+it, requires a regular file, reads in bounded chunks, and returns an error for a
+malformed request rather than trapping.
+
+What this does **not** claim: a compromised decoder can still return bytes the
+app will write to disk. The app never decodes them, so the sandbox is not
+re-entered, but the resulting file is only as trustworthy as the service that
+produced it. `AUDIT.md` states the boundary precisely.
 
 This is why the app itself is not sandboxed: doing that was measured (see
 `AUDIT.md`) and it breaks in-place replacement and copies beside the original,
