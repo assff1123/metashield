@@ -12,6 +12,7 @@ let package = Package(
     .executable(name: "MetaShieldShare", targets: ["MetaShieldShare"]),
     .executable(name: "metashield-cli", targets: ["MetaShieldCLI"]),
     .executable(name: "metashield-self-test", targets: ["MetaShieldSelfTest"]),
+    .executable(name: "MetaShieldDecodeService", targets: ["MetaShieldDecodeService"]),
   ],
   targets: [
     .target(
@@ -44,6 +45,14 @@ let package = Package(
         .linkedFramework("AppKit"),
         .linkedFramework("Photos"),
         .linkedFramework("UniformTypeIdentifiers"),
+      ]
+    ),
+    .executableTarget(
+      name: "MetaShieldDecodeService",
+      dependencies: ["MetaShieldCore"],
+      linkerSettings: [
+        .linkedFramework("CoreGraphics"),
+        .linkedFramework("ImageIO"),
       ]
     ),
     .executableTarget(

@@ -60,7 +60,8 @@ require_universal() {
 }
 
 require_universal "$APP_PATH/Contents/MacOS/MetaShield"
-require_universal "$APP_PATH/Contents/Resources/metashield-cli"
+require_universal "$APP_PATH/Contents/MacOS/metashield-cli"
+require_universal "$APP_PATH/Contents/XPCServices/MetaShieldDecodeService.xpc/Contents/MacOS/MetaShieldDecodeService"
 require_universal "$APP_PATH/Contents/PlugIns/MetaShield Share.appex/Contents/MacOS/MetaShieldShare"
 /usr/bin/plutil -lint "$APP_PATH/Contents/Info.plist"
 /usr/bin/plutil -lint "$APP_PATH/Contents/PlugIns/MetaShield Share.appex/Contents/Info.plist"
@@ -83,5 +84,18 @@ else
     echo "예상된 Gatekeeper 차단 확인: 최초 실행 때 '확인 없이 열기'가 필요합니다."
 fi
 
+# The isolated decoder must be reachable from the shipped bundle and must
+# produce exactly what the in-process path produces. A release where the
+# service is missing or mismatched would silently lose its isolation.
+SAMPLE="$COPY_DIR/xpc-sample.png"
+/usr/bin/sips -s format png -Z 256 \
+    "/System/Library/Desktop Pictures/Solid Colors/Stone.png" --out "$SAMPLE" >/dev/null 2>&1
+if [[ -f "$SAMPLE" ]]; then
+    "$APP_PATH/Contents/MacOS/metashield-cli" --xpc-self-test "$SAMPLE"
+else
+    echo "격리 디코더 검사를 위한 표본 이미지를 만들지 못했습니다." >&2
+    exit 1
+fi
+
 swift run --package-path "$PROJECT_DIR" -c release metashield-self-test
-echo "직접 배포 DMG 무결성·서명 구조·Universal 2·예상 Gatekeeper 동작·자체 테스트 통과"
+echo "직접 배포 DMG 무결성·서명 구조·Universal 2·격리 디코더·예상 Gatekeeper 동작·자체 테스트 통과"

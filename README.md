@@ -17,6 +17,32 @@ automated self test (`swift run -c release metashield-self-test`, 24/24). No
 third-party code is vendored: the app links only Apple system frameworks and the
 system zlib.
 
+## Isolated decoding
+
+Opening images from untrusted sources is what MetaShield is for, and it is also
+the largest thing that can go wrong: the decoders live in Apple's ImageIO, and a
+memory-safety bug there would otherwise run with the user's full privileges.
+
+Every byte an attacker controls is therefore decoded in a separate XPC service
+that is sandboxed with **only** `com.apple.security.app-sandbox` — no file,
+network, or device access of any kind. The app hands it a read-only descriptor
+and gets back encoded bytes; it keeps the file handling, verification, and
+replacement for itself, because those need privileges the decoder must not have.
+
+There is no silent fallback. If the service cannot be reached the request fails
+rather than quietly decoding in the app, since dropping the isolation exactly
+when something is already wrong is the worst possible moment for it.
+
+This is why the app itself is not sandboxed: doing that was measured (see
+`AUDIT.md`) and it breaks in-place replacement and copies beside the original,
+while adding a quarantine attribute to every result. Isolating the decoder keeps
+all of that behaviour and puts the sandbox where the danger actually is.
+
+The command-line tool uses the same service when it runs from inside the app
+bundle. Built standalone it decodes in process, which is a development path.
+The Photos share extension is itself sandboxed, so its decoding is already
+contained.
+
 ## Guarantee boundary
 
 For a successfully processed PNG, MetaShield guarantees that the output:
