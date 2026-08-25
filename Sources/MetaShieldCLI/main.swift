@@ -56,10 +56,13 @@ if arguments.first == "--xpc-self-test" {
 // Inside the app bundle the isolated decoder is available and used. Run
 // standalone (a plain `swift build` binary) there is no service, so decoding
 // happens in process; that path is for development and scripting.
+// Running from inside the app bundle means the isolated decoder is part of this
+// installation, so it is required rather than merely preferred: deciding by
+// whether the .xpc file is still present would let anyone who can delete it
+// downgrade this tool to in-process decoding. Built standalone there is no
+// service and decoding happens here, which is the development path.
 let isolatedEncoder: CanonicalImageEncoding? =
-  FileManager.default.fileExists(
-    atPath: Bundle.main.bundlePath + "/Contents/XPCServices/MetaShieldDecodeService.xpc")
-  ? DecodingServiceClient() : nil
+  Bundle.main.bundleURL.pathExtension == "app" ? DecodingServiceClient() : nil
 let sanitizer = ImageSanitizer(isolatedEncoder: isolatedEncoder)
 
 let verifyOnly = arguments.first == "--verify"
