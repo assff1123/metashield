@@ -206,6 +206,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate,
 
 @MainActor
 private final class ImageServiceProvider: NSObject {
+  static let maximumPasteboardByteCount = 256 * 1_024 * 1_024
+
   weak var applicationDelegate: ApplicationDelegate?
 
   init(applicationDelegate: ApplicationDelegate) {
@@ -252,6 +254,13 @@ private final class ImageServiceProvider: NSObject {
       return
     }
     if let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff) {
+      // The pasteboard hands over a whole Data, so the ceiling is applied here
+      // rather than deeper in, where a hostile provider would already have cost
+      // the memory twice.
+      guard data.count <= ImageServiceProvider.maximumPasteboardByteCount else {
+        error.pointee = "이미지가 너무 큽니다." as NSString
+        return
+      }
       applicationDelegate?.deliverServiceImageData(data, operation: operation)
       return
     }

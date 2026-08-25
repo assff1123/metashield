@@ -78,11 +78,9 @@ public final class ImageSanitizer: Sendable {
       try synchronizeFile(at: tempURL)
       let reread = try Data(contentsOf: tempURL, options: [.mappedIfSafe])
       let finalInspection = try PNGInspector.verifyCanonical(reread)
-      guard finalInspection == inspection else {
-        throw MetaShieldError.verificationFailed("저장 전후 구조가 달라졌습니다.")
+      guard finalInspection == inspection, reread == canonical else {
+        throw MetaShieldError.verificationFailed("저장 전후 내용이 달라졌습니다.")
       }
-      try verifyImageDecodes(
-        reread, expectedWidth: inspection.width, expectedHeight: inspection.height)
       try verifyUnchanged(originalFileState, at: standardizedURL)
       try applySecurityAttributes(
         from: standardizedURL,
@@ -166,6 +164,10 @@ public final class ImageSanitizer: Sendable {
     let image = try makeSanitizedImage(from: source)
     let encoded = try PNGInspector.canonicalData(
       from: try encode(image, as: "public.png", options: nil))
+    // Verification decodes, so it belongs wherever decoding belongs. When this
+    // runs in the isolated service the app never has to open these bytes with
+    // ImageIO, which would hand a compromised decoder a way back out.
+    try verifyImageDecodes(encoded, expectedWidth: image.width, expectedHeight: image.height)
     return (encoded, (image.width, image.height))
   }
 
@@ -190,13 +192,54 @@ public final class ImageSanitizer: Sendable {
       options: [kCGImageDestinationLossyCompressionQuality: quality.compressionValue]
         as CFDictionary
     )
+    try AVIFInspector.verify(
+      encoded, expectedWidth: image.width, expectedHeight: image.height)
     return (encoded, (image.width, image.height))
+  }
+
+  /// Confirms an encoded file is a clean result. Decoding happens in the
+  /// isolated service when one is configured, because `--verify` is pointed at
+  /// files this app did not necessarily produce.
+  public func verifiedImageSize(
+    of sourceData: Data,
+    format: String
+  ) throws -> (width: Int, height: Int) {
+    if format == ImageDecodingRequest.avifFormat {
+      let inspection = try inProcessAVIFSize(of: sourceData)
+      return (inspection.width, inspection.height)
+    }
+    let inspection = try PNGInspector.verifyCanonical(sourceData)
+    try verifyImageDecodes(
+      sourceData, expectedWidth: inspection.width, expectedHeight: inspection.height)
+    return (inspection.width, inspection.height)
+  }
+
+  private func inProcessAVIFSize(of data: Data) throws -> AVIFInspection {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+      let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+      let width = properties[kCGImagePropertyPixelWidth] as? Int,
+      let height = properties[kCGImagePropertyPixelHeight] as? Int
+    else {
+      throw MetaShieldError.verificationFailed("AVIF 파일을 읽지 못했습니다.")
+    }
+    return try AVIFInspector.verify(data, expectedWidth: width, expectedHeight: height)
   }
 
   public func verifyCanonicalPNG(at url: URL) throws -> PNGInspection {
     let data = try mappedInputData(at: url.standardizedFileURL)
+    // The structural parse is pure Swift and always runs here; only the decode
+    // is delegated, so a hostile file never reaches ImageIO in this process.
     let inspection = try PNGInspector.verifyCanonical(data)
-    try verifyImageDecodes(data, expectedWidth: inspection.width, expectedHeight: inspection.height)
+    if let isolatedEncoder {
+      let size = try isolatedEncoder.verifiedImageSize(
+        of: data, format: ImageDecodingRequest.pngFormat)
+      guard size.width == inspection.width, size.height == inspection.height else {
+        throw MetaShieldError.verificationFailed("검증된 크기가 구조와 다릅니다.")
+      }
+    } else {
+      try verifyImageDecodes(
+        data, expectedWidth: inspection.width, expectedHeight: inspection.height)
+    }
     return inspection
   }
 
@@ -233,14 +276,12 @@ public final class ImageSanitizer: Sendable {
 
   public func verifyCanonicalAVIF(at url: URL) throws -> AVIFInspection {
     let data = try mappedInputData(at: url.standardizedFileURL)
-    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-      let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-      let width = properties[kCGImagePropertyPixelWidth] as? Int,
-      let height = properties[kCGImagePropertyPixelHeight] as? Int
-    else {
-      throw MetaShieldError.verificationFailed("AVIF 파일을 읽지 못했습니다.")
+    if let isolatedEncoder {
+      let size = try isolatedEncoder.verifiedImageSize(
+        of: data, format: ImageDecodingRequest.avifFormat)
+      return AVIFInspection(width: size.width, height: size.height, byteCount: data.count)
     }
-    return try AVIFInspector.verify(data, expectedWidth: width, expectedHeight: height)
+    return try inProcessAVIFSize(of: data)
   }
 
   private func writeCanonicalAVIF(
@@ -257,8 +298,14 @@ public final class ImageSanitizer: Sendable {
     } else {
       (encoded, size) = try encodedSanitizedAVIF(from: sourceData, quality: quality)
     }
-    let inspection = try AVIFInspector.verify(
-      encoded, expectedWidth: size.width, expectedHeight: size.height)
+    // When the isolated decoder produced these bytes it already verified them
+    // there. Re-opening them with ImageIO here is exactly the re-entry the
+    // isolation exists to prevent.
+    let inspection =
+      isolatedEncoder != nil
+      ? AVIFInspection(width: size.width, height: size.height, byteCount: encoded.count)
+      : try AVIFInspector.verify(
+        encoded, expectedWidth: size.width, expectedHeight: size.height)
     try writeVerifiedAVIF(
       encoded, width: inspection.width, height: inspection.height, to: outputURL)
     return SanitizationReport(
@@ -869,11 +916,9 @@ public final class ImageSanitizer: Sendable {
       try synchronizeFile(at: tempURL)
       let reread = try Data(contentsOf: tempURL, options: [.mappedIfSafe])
       let finalInspection = try PNGInspector.verifyCanonical(reread)
-      guard finalInspection == inspection else {
-        throw MetaShieldError.verificationFailed("저장 전후 구조가 달라졌습니다.")
+      guard finalInspection == inspection, reread == data else {
+        throw MetaShieldError.verificationFailed("저장 전후 내용이 달라졌습니다.")
       }
-      try verifyImageDecodes(
-        reread, expectedWidth: inspection.width, expectedHeight: inspection.height)
 
       if replaceExisting {
         try atomicReplace(source: tempURL, destination: url)
@@ -916,8 +961,12 @@ public final class ImageSanitizer: Sendable {
     do {
       try writeTemporaryDataSecurely(data, to: tempURL, permissions: 0o644)
       try synchronizeFile(at: tempURL)
+      // Byte equality, not a decode: opening these bytes with ImageIO here
+      // would undo the point of decoding them in the isolated service.
       let reread = try Data(contentsOf: tempURL, options: [.mappedIfSafe])
-      try AVIFInspector.verify(reread, expectedWidth: width, expectedHeight: height)
+      guard reread == data else {
+        throw MetaShieldError.verificationFailed("저장 전후 내용이 달라졌습니다.")
+      }
 
       let result = tempURL.path.withCString { sourcePath in
         url.path.withCString { destinationPath in

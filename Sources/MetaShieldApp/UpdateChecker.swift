@@ -246,18 +246,37 @@ enum UpdateChecker {
       index += 1
     }
     try FileManager.default.moveItem(at: temporaryURL, to: destination)
-    markAsDownloaded(destination)
+    do {
+      try markAsDownloaded(destination)
+    } catch {
+      try? FileManager.default.removeItem(at: destination)
+      throw error
+    }
     return destination
   }
 
   /// Keeps the same first-run experience as a browser download. Without this the
-  /// app would hand the user a file that skips Gatekeeper's first-launch check.
-  private static func markAsDownloaded(_ url: URL) {
+  /// app would hand the user a file that skips Gatekeeper's first-launch check,
+  /// so a failure here is a failure of the download: handing over an unmarked
+  /// disk image would quietly remove a check the user is entitled to.
+  private static func markAsDownloaded(_ url: URL) throws {
     let value = "0083;\(String(format: "%08x", UInt32(Date().timeIntervalSince1970)));MetaShield;"
-    _ = value.withCString { bytes in
+    let result = value.withCString { bytes in
       url.path.withCString { path in
         setxattr(path, "com.apple.quarantine", bytes, strlen(bytes), 0, 0)
       }
+    }
+    guard result == 0 else {
+      throw DownloadFailure.storage(
+        "격리 속성을 설정하지 못했습니다: \(String(cString: strerror(errno)))")
+    }
+    // Read it back: a filesystem that silently drops extended attributes would
+    // otherwise look like success.
+    let size = url.path.withCString { path in
+      getxattr(path, "com.apple.quarantine", nil, 0, 0, 0)
+    }
+    guard size > 0 else {
+      throw DownloadFailure.storage("격리 속성이 저장되지 않는 파일시스템입니다.")
     }
   }
 

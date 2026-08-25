@@ -11,6 +11,12 @@ public protocol CanonicalImageEncoding: Sendable {
     from sourceData: Data,
     quality: AVIFQuality
   ) throws -> (Data, (width: Int, height: Int))
+  /// Decodes `sourceData` only to confirm it is a clean result of the expected
+  /// format, returning its dimensions.
+  func verifiedImageSize(
+    of sourceData: Data,
+    format: String
+  ) throws -> (width: Int, height: Int)
 }
 
 extension ImageSanitizer: CanonicalImageEncoding {}
@@ -65,10 +71,18 @@ public final class DecodingServiceClient: CanonicalImageEncoding, @unchecked Sen
     )
   }
 
+  public func verifiedImageSize(
+    of sourceData: Data,
+    format: String
+  ) throws -> (width: Int, height: Int) {
+    try run(sourceData, format: format, quality: 0, verifyOnly: true).1
+  }
+
   private func run(
     _ sourceData: Data,
     format: String,
-    quality: Double
+    quality: Double,
+    verifyOnly: Bool = false
   ) throws -> (Data, (width: Int, height: Int)) {
     // The bytes travel as a descriptor rather than a copied payload, so a large
     // image does not have to exist twice in memory to cross the boundary.
@@ -96,12 +110,17 @@ public final class DecodingServiceClient: CanonicalImageEncoding, @unchecked Sen
       maximumInputByteCount: maximumInputByteCount,
       compressionQuality: quality
     )
-    proxy.sanitizeImage(handle: handle, request: request) { response, message in
+    let completion: (ImageDecodingResponse?, String?) -> Void = { response, message in
       if let response {
         box.finish(.success(response))
       } else {
         box.finish(.failure(ClientError.remote(message ?? "격리된 디코더가 실패했습니다.")))
       }
+    }
+    if verifyOnly {
+      proxy.verifyImage(handle: handle, request: request, withReply: completion)
+    } else {
+      proxy.sanitizeImage(handle: handle, request: request, withReply: completion)
     }
 
     let response = try box.wait(timeout: timeout)
@@ -129,13 +148,17 @@ public final class DecodingServiceClient: CanonicalImageEncoding, @unchecked Sen
 
   private static func makeInterface() -> NSXPCInterface {
     let interface = NSXPCInterface(with: ImageDecodingServiceProtocol.self)
-    let selector = #selector(ImageDecodingServiceProtocol.sanitizeImage(handle:request:withReply:))
-    interface.setClasses(
-      NSSet(array: [ImageDecodingRequest.self]) as! Set<AnyHashable>,
-      for: selector, argumentIndex: 1, ofReply: false)
-    interface.setClasses(
-      NSSet(array: [ImageDecodingResponse.self]) as! Set<AnyHashable>,
-      for: selector, argumentIndex: 0, ofReply: true)
+    for selector in [
+      #selector(ImageDecodingServiceProtocol.sanitizeImage(handle:request:withReply:)),
+      #selector(ImageDecodingServiceProtocol.verifyImage(handle:request:withReply:)),
+    ] {
+      interface.setClasses(
+        NSSet(array: [ImageDecodingRequest.self]) as! Set<AnyHashable>,
+        for: selector, argumentIndex: 1, ofReply: false)
+      interface.setClasses(
+        NSSet(array: [ImageDecodingResponse.self]) as! Set<AnyHashable>,
+        for: selector, argumentIndex: 0, ofReply: true)
+    }
     return interface
   }
 
