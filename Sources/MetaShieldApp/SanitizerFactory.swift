@@ -17,9 +17,10 @@ enum SanitizerFactory {
     maximumPixelCount: Int = 40_000_000,
     maximumInputByteCount: Int = 256 * 1_024 * 1_024
   ) -> ImageSanitizer {
-    let client = DecodingServiceClient()
-    client.maximumPixelCount = maximumPixelCount
-    client.maximumInputByteCount = maximumInputByteCount
+    let client = DecodingServiceClient(
+      maximumPixelCount: maximumPixelCount,
+      maximumInputByteCount: maximumInputByteCount
+    )
     return ImageSanitizer(
       maximumPixelCount: maximumPixelCount,
       maximumInputByteCount: maximumInputByteCount,

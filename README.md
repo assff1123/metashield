@@ -13,7 +13,7 @@ off-by-default GitHub release check; image data and metadata are never transmitt
 MetaShield was developed with AI coding assistance. The sanitizing core, the file
 replacement path, and the update check were reviewed by a human against the threat
 model in `AUDIT.md`, and every claim in the guarantee boundary below is backed by an
-automated self test (`swift run -c release metashield-self-test`, 32/32). No
+automated self test (`swift run -c release metashield-self-test`, 35/35). No
 third-party code is vendored: the app links only Apple system frameworks and the
 system zlib.
 
@@ -29,19 +29,22 @@ network, or device access of any kind. The app hands it a read-only descriptor
 and gets back encoded bytes; it keeps the file handling, verification, and
 replacement for itself, because those need privileges the decoder must not have.
 
-Verification decodes too, so it happens on the same side of the boundary. The
-service checks its own output before returning it, and the app then does only
+Validation that invokes native decoders happens on the same side of the boundary.
+The service checks its own output before returning it, and the app then does only
 non-decoding checks: the pure-Swift `PNGInspector` structural parse, byte counts,
-and a byte-for-byte comparison of what reached the disk. The app does not open
-untrusted or service-returned bytes with ImageIO at all — doing so would give a
-compromised decoder the same bug to exploit a second time, outside the sandbox.
+and a bounded byte-for-byte comparison of what reached the disk. For PNG, the
+service independently checks the exact zlib end, decompressed scanline length,
+and every row's filter byte; a redundant ImageIO decode is unnecessary. The app
+does not open untrusted or service-returned bytes with ImageIO at all — doing so
+would give a compromised decoder the same bug to exploit a second time, outside
+the sandbox.
 
 There is no silent fallback. If the service cannot be reached the request fails
 rather than quietly decoding in the app, since dropping the isolation exactly
 when something is already wrong is the worst possible moment for it.
 
 The service does not trust its caller either. It enforces its own absolute
-ceilings (40 MP, 256 MiB), measures the descriptor with `fstat` before reading
+ceilings (40 MP, 256 MiB input and output), measures the descriptor with `fstat` before reading
 it, requires a regular file, reads in bounded chunks, and returns an error for a
 malformed request rather than trapping.
 
@@ -74,7 +77,8 @@ For a successfully processed PNG, MetaShield guarantees that the output:
   changes and fall under the visible-pixel boundary below;
 - contains only `IHDR`, `IDAT`, and `IEND` chunks with valid CRCs;
 - contains none of the source file's extended attributes;
-- can be decoded again at the verified dimensions before replacement.
+- contains one complete zlib stream with exactly the expected number of RGB
+  scanline bytes and a valid PNG filter byte on every row.
 
 macOS may attach protected security attributes such as `com.apple.provenance` and
 `com.apple.macl` to a newly created file. They are generated or managed by the OS
@@ -183,7 +187,11 @@ touches the network. MetaShield installs no background agent.
   pixels and accepts at most 100 images per request. The Photos share extension,
   which runs under a smaller macOS memory budget, limits each provider file to
   128 MiB and 8 million decoded pixels and accepts at most 20 images. Provider loads
-  and Photos authorization/import callbacks also time out after 60 seconds.
+  and Photos authorization/import callbacks also time out after 60 seconds. Photos
+  file promises are received serially, monitored while they are being written,
+  and limited to 256 MiB each and 4 GiB for the batch. AppKit exposes no size
+  preflight for raw pasteboard image data, so that one path can be materialized by
+  macOS before MetaShield applies its 256 MiB rejection limit.
 - A headless hand-off never opens the MetaShield main window, including on failure.
   Headless results are silent by default; when the user enables the main window's
   `백그라운드 처리 완료 알림` option and macOS notification permission is granted, a

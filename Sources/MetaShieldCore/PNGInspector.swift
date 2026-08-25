@@ -32,6 +32,10 @@ public enum PNGInspector {
   public static func inspect(_ data: Data) throws -> PNGInspection {
     let data = rebased(data)
     let chunks = try parse(data)
+    return try inspection(of: data, chunks: chunks)
+  }
+
+  private static func inspection(of data: Data, chunks: [ParsedChunk]) throws -> PNGInspection {
     guard let first = chunks.first, first.type == "IHDR" else {
       throw MetaShieldError.invalidPNG("IHDR이 첫 청크가 아닙니다.")
     }
@@ -64,20 +68,17 @@ public enum PNGInspector {
     }
 
     var result = signature
+    result.reserveCapacity(encodedPNG.count)
     let idatChunks = chunks.filter { $0.type == "IDAT" }
     guard !idatChunks.isEmpty, chunks.contains(where: { $0.type == "IEND" }) else {
       throw MetaShieldError.invalidPNG("필수 IDAT 또는 IEND 청크가 없습니다.")
     }
 
-    // ImageIO can split large compressed streams across multiple IDAT chunks.
-    // Merge their payloads into one newly checksummed chunk so the canonical
-    // output has an unambiguous structure at every image size.
-    var compressedStream = Data()
-    for chunk in idatChunks {
-      compressedStream.append(encodedPNG[chunk.payloadRange])
-    }
     try appendChunk(type: "IHDR", payload: Data(encodedPNG[first.payloadRange]), to: &result)
-    try appendChunk(type: "IDAT", payload: compressedStream, to: &result)
+    // ImageIO can split large compressed streams across multiple IDAT chunks.
+    // Append their slices straight into one newly checksummed chunk. Avoiding
+    // an intermediate compressed-stream Data saves one full output-sized copy.
+    try appendMergedIDAT(idatChunks, source: encodedPNG, to: &result)
     try appendChunk(type: "IEND", payload: Data(), to: &result)
 
     _ = try verifyCanonical(result)
@@ -87,8 +88,31 @@ public enum PNGInspector {
   @discardableResult
   public static func verifyCanonical(_ data: Data) throws -> PNGInspection {
     let data = rebased(data)
+    let (inspection, idatRange) = try verifyCanonicalStructureDetails(data)
+    try validateCanonicalPixelStream(
+      data[idatRange],
+      width: inspection.width,
+      height: inspection.height
+    )
+    return inspection
+  }
+
+  /// Verifies the complete canonical PNG container without inflating IDAT.
+  ///
+  /// The unsandboxed app uses this after an isolated decoder has already
+  /// performed the full pixel-stream verification. This parser is bounds
+  /// checked Swift code and does not invoke ImageIO or zlib.
+  @discardableResult
+  public static func verifyCanonicalStructure(_ data: Data) throws -> PNGInspection {
+    let data = rebased(data)
+    return try verifyCanonicalStructureDetails(data).inspection
+  }
+
+  private static func verifyCanonicalStructureDetails(
+    _ data: Data
+  ) throws -> (inspection: PNGInspection, idatRange: Range<Int>) {
     let chunks = try parse(data)
-    let inspection = try inspect(data)
+    let inspection = try inspection(of: data, chunks: chunks)
     let types = inspection.chunkTypes
     guard types.first == "IHDR", types.last == "IEND" else {
       throw MetaShieldError.verificationFailed("필수 청크 순서가 잘못되었습니다.")
@@ -126,19 +150,14 @@ public enum PNGInspector {
     guard let idatChunk = chunks.first(where: { $0.type == "IDAT" }) else {
       throw MetaShieldError.verificationFailed("IDAT 청크가 없습니다.")
     }
-    try validateCanonicalPixelStream(
-      Data(data[idatChunk.payloadRange]),
-      width: inspection.width,
-      height: inspection.height
-    )
-    return inspection
+    return (inspection, idatChunk.payloadRange)
   }
 
   /// A decoder accepting a PNG does not prove that every IDAT byte belongs to
   /// the image. Validate the zlib end marker, exact scanline length, and filter
   /// bytes so trailing payloads and concatenated streams cannot pass as clean.
   private static func validateCanonicalPixelStream(
-    _ compressed: Data,
+    _ compressed: Data.SubSequence,
     width: Int,
     height: Int
   ) throws {
@@ -297,9 +316,47 @@ public enum PNGInspector {
     ])
     output.append(typeData)
     output.append(payload)
-    var crcInput = typeData
-    crcInput.append(payload)
-    let crc = CRC32.checksum(crcInput[...])
+    var crcState = CRC32.initialState
+    CRC32.update(&crcState, with: typeData[...])
+    CRC32.update(&crcState, with: payload[...])
+    let crc = CRC32.finalize(crcState)
+    output.append(contentsOf: [
+      UInt8(truncatingIfNeeded: crc >> 24),
+      UInt8(truncatingIfNeeded: crc >> 16),
+      UInt8(truncatingIfNeeded: crc >> 8),
+      UInt8(truncatingIfNeeded: crc),
+    ])
+  }
+
+  private static func appendMergedIDAT(
+    _ chunks: [ParsedChunk],
+    source: Data,
+    to output: inout Data
+  ) throws {
+    var payloadByteCount = 0
+    for chunk in chunks {
+      let (next, overflow) = payloadByteCount.addingReportingOverflow(chunk.payloadRange.count)
+      guard !overflow, next <= Int(UInt32.max) else {
+        throw MetaShieldError.invalidPNG("정규 PNG IDAT 청크가 너무 큽니다.")
+      }
+      payloadByteCount = next
+    }
+    let typeData = Data("IDAT".utf8)
+    output.append(contentsOf: [
+      UInt8(truncatingIfNeeded: UInt32(payloadByteCount) >> 24),
+      UInt8(truncatingIfNeeded: UInt32(payloadByteCount) >> 16),
+      UInt8(truncatingIfNeeded: UInt32(payloadByteCount) >> 8),
+      UInt8(truncatingIfNeeded: UInt32(payloadByteCount)),
+    ])
+    output.append(typeData)
+    var crcState = CRC32.initialState
+    CRC32.update(&crcState, with: typeData[...])
+    for chunk in chunks {
+      let payload = source[chunk.payloadRange]
+      output.append(payload)
+      CRC32.update(&crcState, with: payload)
+    }
+    let crc = CRC32.finalize(crcState)
     output.append(contentsOf: [
       UInt8(truncatingIfNeeded: crc >> 24),
       UInt8(truncatingIfNeeded: crc >> 16),
@@ -310,6 +367,8 @@ public enum PNGInspector {
 }
 
 private enum CRC32 {
+  static let initialState: UInt32 = 0xFFFF_FFFF
+
   private static let table: [UInt32] = (0..<256).map { index in
     var value = UInt32(index)
     for _ in 0..<8 {
@@ -319,11 +378,17 @@ private enum CRC32 {
   }
 
   static func checksum(_ bytes: Data.SubSequence) -> UInt32 {
-    var crc: UInt32 = 0xFFFF_FFFF
+    var crc = initialState
+    update(&crc, with: bytes)
+    return finalize(crc)
+  }
+
+  static func update(_ crc: inout UInt32, with bytes: Data.SubSequence) {
     for byte in bytes {
       let index = Int((crc ^ UInt32(byte)) & 0xFF)
       crc = table[index] ^ (crc >> 8)
     }
-    return crc ^ 0xFFFF_FFFF
   }
+
+  static func finalize(_ crc: UInt32) -> UInt32 { crc ^ 0xFFFF_FFFF }
 }

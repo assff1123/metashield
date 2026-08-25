@@ -32,13 +32,21 @@ if arguments.first == "--xpc-self-test" {
   let sanitizer = ImageSanitizer()
   let client = DecodingServiceClient()
   do {
-    let sample = try Data(contentsOf: URL(fileURLWithPath: arguments.dropFirst().first ?? ""))
+    let sampleURL = URL(fileURLWithPath: arguments.dropFirst().first ?? "")
+    let sample = try Data(contentsOf: sampleURL)
     let (local, localSize) = try sanitizer.encodedSanitizedPNG(from: sample)
-    let (remote, remoteSize) = try client.encodedSanitizedPNG(from: sample)
+    let (remoteData, remoteDataSize) = try client.encodedSanitizedPNG(from: sample)
+    let remoteFile = try ImageSanitizer(isolatedEncoder: client).makeCanonicalPNG(from: sampleURL)
+    let remoteFileSize = try PNGInspector.verifyCanonicalStructure(remoteFile)
+    let dataMatches = local == remoteData && localSize == remoteDataSize
+    let descriptorMatches =
+      local == remoteFile
+      && localSize.width == remoteFileSize.width
+      && localSize.height == remoteFileSize.height
     print("격리 디코더 연결: OK")
-    print("  크기 일치: \(localSize == remoteSize) (\(remoteSize.width)×\(remoteSize.height))")
-    print("  바이트 일치: \(local == remote) (\(remote.count) bytes)")
-    exit(local == remote && localSize == remoteSize ? 0 : 1)
+    print("  Data 요청 일치: \(dataMatches) (\(remoteDataSize.width)×\(remoteDataSize.height))")
+    print("  파일 descriptor 요청 일치: \(descriptorMatches) (\(remoteFile.count) bytes)")
+    exit(dataMatches && descriptorMatches ? 0 : 1)
   } catch {
     fputs("격리 디코더 실패: \(error.localizedDescription)\n", stderr)
     exit(1)

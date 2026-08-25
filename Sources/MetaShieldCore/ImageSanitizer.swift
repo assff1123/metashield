@@ -14,6 +14,7 @@ public struct SanitizationReport: Sendable {
 
 public final class ImageSanitizer: Sendable {
   public static let shared = ImageSanitizer()
+  private static let maximumOutputByteCount = 256 * 1_024 * 1_024
 
   /// Prevent a maliciously large image from exhausting memory while processing a service request.
   public let maximumPixelCount: Int
@@ -42,15 +43,33 @@ public final class ImageSanitizer: Sendable {
   public func makeCanonicalPNG(from sourceData: Data) throws -> Data {
     try validateInputByteCount(sourceData.count)
     if let isolatedEncoder {
-      return try isolatedEncoder.encodedSanitizedPNG(from: sourceData).0
+      let (encoded, size) = try isolatedEncoder.encodedSanitizedPNG(from: sourceData)
+      _ = try inspectIsolatedCanonicalPNG(encoded, size: size)
+      return encoded
     }
-    return try encodedSanitizedPNG(from: sourceData).0
+    let encoded = try encodedSanitizedPNG(from: sourceData).0
+    guard encoded.count <= Self.maximumOutputByteCount else {
+      throw MetaShieldError.verificationFailed("정리된 이미지가 출력 크기 제한을 넘었습니다.")
+    }
+    return encoded
   }
 
   public func makeCanonicalPNG(from sourceURL: URL) throws -> Data {
-    let inputURL = sourceURL.standardizedFileURL
-    let sourceData = try mappedInputData(at: inputURL)
-    return try makeCanonicalPNG(from: sourceData)
+    try canonicalPNGFileResult(from: sourceURL.standardizedFileURL).data
+  }
+
+  private func inspectIsolatedCanonicalPNG(
+    _ encoded: Data,
+    size: (width: Int, height: Int)
+  ) throws -> PNGInspection {
+    guard encoded.count <= Self.maximumOutputByteCount else {
+      throw MetaShieldError.verificationFailed("정리된 이미지가 출력 크기 제한을 넘었습니다.")
+    }
+    let inspection = try PNGInspector.verifyCanonicalStructure(encoded)
+    guard inspection.width == size.width, inspection.height == size.height else {
+      throw MetaShieldError.verificationFailed("격리된 디코더의 결과 크기가 구조와 다릅니다.")
+    }
+    return inspection
   }
 
   public func sanitizePNGInPlace(at url: URL) throws -> SanitizationReport {
@@ -67,8 +86,9 @@ public final class ImageSanitizer: Sendable {
     }
     let originalSize = Int(originalFileState.size)
     try validateInputByteCount(originalSize)
-    let canonical = try makeCanonicalPNG(from: standardizedURL)
-    let inspection = try PNGInspector.verifyCanonical(canonical)
+    let fileResult = try canonicalPNGFileResult(from: standardizedURL)
+    let canonical = fileResult.data
+    let inspection = fileResult.inspection
 
     let staged = try stageReplacement(besideOriginalAt: standardizedURL, pathExtension: "png")
     let tempURL = staged.url
@@ -76,11 +96,10 @@ public final class ImageSanitizer: Sendable {
     do {
       try writeTemporaryDataSecurely(canonical, to: tempURL, permissions: 0o600)
       try synchronizeFile(at: tempURL)
-      let reread = try Data(contentsOf: tempURL, options: [.mappedIfSafe])
-      let finalInspection = try PNGInspector.verifyCanonical(reread)
-      guard finalInspection == inspection, reread == canonical else {
-        throw MetaShieldError.verificationFailed("저장 전후 내용이 달라졌습니다.")
-      }
+      // `canonical` was already validated. Compare the persisted inode in
+      // bounded chunks instead of mapping and faulting a second output-sized
+      // buffer into the host process (up to another 256 MiB).
+      try verifyFileContents(at: tempURL, equalTo: canonical)
       try verifyUnchanged(originalFileState, at: standardizedURL)
       try applySecurityAttributes(
         from: standardizedURL,
@@ -112,10 +131,10 @@ public final class ImageSanitizer: Sendable {
   {
     let inputURL = sourceURL.standardizedFileURL
     let outputURL = destinationURL.standardizedFileURL
-    let sourceData = try mappedInputData(at: inputURL)
-    let originalSize = sourceData.count
-    let canonical = try makeCanonicalPNG(from: sourceData)
-    let inspection = try PNGInspector.verifyCanonical(canonical)
+    let fileResult = try canonicalPNGFileResult(from: inputURL)
+    let originalSize = fileResult.inputByteCount
+    let canonical = fileResult.data
+    let inspection = fileResult.inspection
     try writeVerifiedCanonicalPNG(
       canonical, inspection: inspection, to: outputURL, replaceExisting: false)
     return SanitizationReport(
@@ -134,7 +153,7 @@ public final class ImageSanitizer: Sendable {
     let outputURL = destinationURL.standardizedFileURL
     try validateInputByteCount(sourceData.count)
     let canonical = try makeCanonicalPNG(from: sourceData)
-    let inspection = try PNGInspector.verifyCanonical(canonical)
+    let inspection = try verifyProducedCanonicalPNG(canonical)
     try writeVerifiedCanonicalPNG(
       canonical, inspection: inspection, to: outputURL, replaceExisting: false)
     return SanitizationReport(
@@ -155,20 +174,12 @@ public final class ImageSanitizer: Sendable {
   public func encodedSanitizedPNG(from sourceData: Data) throws -> (Data, (width: Int, height: Int))
   {
     try validateInputByteCount(sourceData.count)
-    guard
-      let source = CGImageSourceCreateWithData(
-        sourceData as CFData, [kCGImageSourceShouldCache: false] as CFDictionary)
-    else {
-      throw MetaShieldError.unsupportedOrCorruptImage
-    }
-    let image = try makeSanitizedImage(from: source)
-    let encoded = try PNGInspector.canonicalData(
-      from: try encode(image, as: "public.png", options: nil))
-    // Verification decodes, so it belongs wherever decoding belongs. When this
-    // runs in the isolated service the app never has to open these bytes with
-    // ImageIO, which would hand a compromised decoder a way back out.
-    try verifyImageDecodes(encoded, expectedWidth: image.width, expectedHeight: image.height)
-    return (encoded, (image.width, image.height))
+    // PNGInspector.canonicalData performs the complete independent validation:
+    // exact IHDR/IDAT/IEND structure and CRCs, one finished zlib stream, the
+    // exact decoded scanline length, and a valid filter byte for every row.
+    // Re-decoding that already-validated output with ImageIO adds no PNG state
+    // that can still be invalid, but retains another full 40 MP frame at peak.
+    return try makeVerifiedSanitizedPNG(from: sourceData)
   }
 
   public func encodedSanitizedAVIF(
@@ -176,25 +187,73 @@ public final class ImageSanitizer: Sendable {
     quality: AVIFQuality
   ) throws -> (Data, (width: Int, height: Int)) {
     try validateInputByteCount(sourceData.count)
-    guard
-      let source = CGImageSourceCreateWithData(
-        sourceData as CFData, [kCGImageSourceShouldCache: false] as CFDictionary)
-    else {
-      throw MetaShieldError.unsupportedOrCorruptImage
-    }
     guard AVIFInspector.isEncodingAvailable else {
       throw MetaShieldError.avifEncodingUnavailable
     }
-    let image = try makeSanitizedImage(from: source)
-    let encoded = try encode(
-      image,
-      as: AVIFInspector.typeIdentifier,
-      options: [kCGImageDestinationLossyCompressionQuality: quality.compressionValue]
-        as CFDictionary
-    )
+    let (encoded, size) = try makeUnverifiedSanitizedAVIF(from: sourceData, quality: quality)
     try AVIFInspector.verify(
-      encoded, expectedWidth: image.width, expectedHeight: image.height)
-    return (encoded, (image.width, image.height))
+      encoded, expectedWidth: size.width, expectedHeight: size.height)
+    return (encoded, size)
+  }
+
+  private func canonicalPNGFileResult(
+    from inputURL: URL
+  ) throws -> (data: Data, inspection: PNGInspection, inputByteCount: Int) {
+    if let descriptorEncoder = isolatedEncoder as? CanonicalImageDescriptorEncoding {
+      return try withInputFileHandle(at: inputURL) { handle, inputByteCount in
+        let (encoded, size) = try descriptorEncoder.encodedSanitizedPNG(from: handle)
+        let inspection = try inspectIsolatedCanonicalPNG(encoded, size: size)
+        return (encoded, inspection, inputByteCount)
+      }
+    }
+    let sourceData = try mappedInputData(at: inputURL)
+    let encoded = try makeCanonicalPNG(from: sourceData)
+    return (encoded, try verifyProducedCanonicalPNG(encoded), sourceData.count)
+  }
+
+  /// Keep decode, encode, and verification in separate scopes. ImageIO uses
+  /// autoreleased full-frame scratch objects; without these pools a long-lived
+  /// XPC request can retain decode buffers until after the verification decode,
+  /// making several 40 MP frames overlap at peak.
+  private func makeVerifiedSanitizedPNG(
+    from sourceData: Data
+  ) throws -> (Data, (width: Int, height: Int)) {
+    let image = try decodedSanitizedImage(from: sourceData)
+    let size = (width: image.width, height: image.height)
+    let encoded = try autoreleasepool {
+      try PNGInspector.canonicalData(
+        from: try encode(image, as: "public.png", options: nil))
+    }
+    return (encoded, size)
+  }
+
+  private func makeUnverifiedSanitizedAVIF(
+    from sourceData: Data,
+    quality: AVIFQuality
+  ) throws -> (Data, (width: Int, height: Int)) {
+    let image = try decodedSanitizedImage(from: sourceData)
+    let size = (width: image.width, height: image.height)
+    let encoded = try autoreleasepool {
+      try encode(
+        image,
+        as: AVIFInspector.typeIdentifier,
+        options: [kCGImageDestinationLossyCompressionQuality: quality.compressionValue]
+          as CFDictionary
+      )
+    }
+    return (encoded, size)
+  }
+
+  private func decodedSanitizedImage(from sourceData: Data) throws -> CGImage {
+    try autoreleasepool {
+      guard
+        let source = CGImageSourceCreateWithData(
+          sourceData as CFData, [kCGImageSourceShouldCache: false] as CFDictionary)
+      else {
+        throw MetaShieldError.unsupportedOrCorruptImage
+      }
+      return try makeSanitizedImage(from: source)
+    }
   }
 
   /// Confirms an encoded file is a clean result. Decoding happens in the
@@ -227,19 +286,21 @@ public final class ImageSanitizer: Sendable {
 
   public func verifyCanonicalPNG(at url: URL) throws -> PNGInspection {
     let data = try mappedInputData(at: url.standardizedFileURL)
-    // The structural parse is pure Swift and always runs here; only the decode
-    // is delegated, so a hostile file never reaches ImageIO in this process.
-    let inspection = try PNGInspector.verifyCanonical(data)
     if let isolatedEncoder {
+      // Only the bounds-checked Swift container parser runs here. Inflation and
+      // ImageIO decoding are delegated together, so hostile compressed bytes do
+      // not enter native parsers in this process.
+      let inspection = try PNGInspector.verifyCanonicalStructure(data)
       let size = try isolatedEncoder.verifiedImageSize(
         of: data, format: ImageDecodingRequest.pngFormat)
       guard size.width == inspection.width, size.height == inspection.height else {
         throw MetaShieldError.verificationFailed("검증된 크기가 구조와 다릅니다.")
       }
-    } else {
-      try verifyImageDecodes(
-        data, expectedWidth: inspection.width, expectedHeight: inspection.height)
+      return inspection
     }
+    let inspection = try PNGInspector.verifyCanonical(data)
+    try verifyImageDecodes(
+      data, expectedWidth: inspection.width, expectedHeight: inspection.height)
     return inspection
   }
 
@@ -255,6 +316,20 @@ public final class ImageSanitizer: Sendable {
   ) throws -> SanitizationReport {
     let inputURL = sourceURL.standardizedFileURL
     let outputURL = destinationURL.standardizedFileURL
+    if let descriptorEncoder = isolatedEncoder as? CanonicalImageDescriptorEncoding {
+      return try withInputFileHandle(at: inputURL) { handle, inputByteCount in
+        let (encoded, size) = try descriptorEncoder.encodedSanitizedAVIF(
+          from: handle,
+          quality: quality
+        )
+        return try writeIsolatedCanonicalAVIF(
+          encoded,
+          size: size,
+          originalByteCount: inputByteCount,
+          to: outputURL
+        )
+      }
+    }
     let sourceData = try mappedInputData(at: inputURL)
     return try writeCanonicalAVIF(
       from: sourceData, originalByteCount: sourceData.count, to: outputURL, quality: quality)
@@ -318,6 +393,31 @@ public final class ImageSanitizer: Sendable {
     )
   }
 
+  private func writeIsolatedCanonicalAVIF(
+    _ encoded: Data,
+    size: (width: Int, height: Int),
+    originalByteCount: Int,
+    to outputURL: URL
+  ) throws -> SanitizationReport {
+    guard encoded.count <= Self.maximumOutputByteCount,
+      size.width > 0,
+      size.height > 0,
+      size.width <= Int.max / size.height,
+      size.width * size.height <= maximumPixelCount
+    else {
+      throw MetaShieldError.verificationFailed("격리된 디코더가 올바르지 않은 결과를 보냈습니다.")
+    }
+    try writeVerifiedAVIF(encoded, width: size.width, height: size.height, to: outputURL)
+    return SanitizationReport(
+      url: outputURL,
+      width: size.width,
+      height: size.height,
+      originalByteCount: originalByteCount,
+      sanitizedByteCount: encoded.count,
+      chunkTypes: []
+    )
+  }
+
   /// Decodes one frame and rebuilds it as a fresh, fully opaque 8-bit sRGB image
   /// carrying no source metadata. Both the PNG and the AVIF encoders start here,
   /// so the scrubbing guarantees do not depend on the output format.
@@ -375,35 +475,22 @@ public final class ImageSanitizer: Sendable {
     guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
       throw MetaShieldError.bitmapAllocationFailed
     }
-    var rgba = try straightRGBAData(
-      from: decodedImage, width: width, height: height, colorSpace: colorSpace)
-
     guard width <= Int.max / 3,
       height <= Int.max / (width * 3)
     else {
       throw MetaShieldError.imageTooLarge(width: width, height: height)
     }
-    let pixelCount = width * height
-    let rgbByteCount = pixelCount * 3
-    rgba.withUnsafeMutableBytes { bytes in
-      let pixels = bytes.bindMemory(to: UInt8.self)
-      for pixel in 0..<pixelCount {
-        let sourceIndex = pixel * 4
-        let destinationIndex = pixel * 3
-        let sanitizedAlpha = quantizedAlpha(Int(pixels[sourceIndex + 3]))
-        for channel in 0..<3 {
-          let straight = Int(pixels[sourceIndex + channel])
-          let composited = (straight * sanitizedAlpha + 255 * (255 - sanitizedAlpha) + 127) / 255
-          pixels[destinationIndex + channel] = UInt8(clamping: composited)
-        }
-      }
-    }
-    rgba.removeSubrange(rgbByteCount..<rgba.count)
-
-    // The composited image is fully opaque, so reorienting it here only moves
-    // whole pixels and cannot reintroduce alpha-dependent rounding.
-    let (rgb, orientedWidth, orientedHeight) = applyingOrientation(
-      rgba, width: width, height: height, orientation: orientation)
+    // Composite and orient straight into the final 3-byte RGB buffer. The old
+    // pipeline kept separate RGBA, compacted RGB, and (for EXIF orientation)
+    // oriented RGB buffers alive at once. This preserves the exact pixel math
+    // while removing one or two full-frame copies.
+    let (rgb, orientedWidth, orientedHeight) = try opaqueOrientedRGBData(
+      from: decodedImage,
+      width: width,
+      height: height,
+      orientation: orientation,
+      colorSpace: colorSpace
+    )
 
     guard let provider = CGDataProvider(data: rgb as CFData),
       let cleanImage = CGImage(
@@ -500,14 +587,26 @@ public final class ImageSanitizer: Sendable {
     else {
       return nil
     }
-    defer { free(buffer.data) }
     guard Int(buffer.width) == width,
       Int(buffer.height) == height,
       buffer.rowBytes >= bytesPerRow
     else {
+      free(buffer.data)
       return nil
     }
 
+    // vImage allocates this buffer with malloc. When rows are already tight,
+    // transfer ownership into Data rather than allocating and copying another
+    // complete RGBA frame.
+    if buffer.rowBytes == bytesPerRow {
+      return Data(
+        bytesNoCopy: sourceBase,
+        count: bytesPerRow * height,
+        deallocator: .free
+      )
+    }
+
+    defer { free(buffer.data) }
     var data = Data(count: bytesPerRow * height)
     let sourceRowBytes = buffer.rowBytes
     data.withUnsafeMutableBytes { destination in
@@ -573,29 +672,50 @@ public final class ImageSanitizer: Sendable {
     return rgba
   }
 
-  /// Applies the stored EXIF orientation by moving whole pixels of the finished
-  /// opaque image.
-  private func applyingOrientation(
-    _ rgb: Data,
+  /// Removes alpha payloads, composites on white, and applies EXIF orientation
+  /// while writing each opaque pixel only once.
+  private func opaqueOrientedRGBData(
+    from image: CGImage,
     width: Int,
     height: Int,
-    orientation: Int
-  ) -> (Data, Int, Int) {
-    guard (2...8).contains(orientation) else { return (rgb, width, height) }
-    let isTransposed = orientation >= 5
+    orientation: Int,
+    colorSpace: CGColorSpace
+  ) throws -> (Data, Int, Int) {
+    let rgba = try straightRGBAData(
+      from: image,
+      width: width,
+      height: height,
+      colorSpace: colorSpace
+    )
+    let normalizedOrientation = (1...8).contains(orientation) ? orientation : 1
+    let isTransposed = normalizedOrientation >= 5
     let orientedWidth = isTransposed ? height : width
     let orientedHeight = isTransposed ? width : height
     var oriented = Data(count: width * height * 3)
-    rgb.withUnsafeBytes { source in
+    rgba.withUnsafeBytes { source in
       oriented.withUnsafeMutableBytes { destination in
         guard let sourcePixels = source.baseAddress?.assumingMemoryBound(to: UInt8.self),
           let destinationPixels = destination.baseAddress?.assumingMemoryBound(to: UInt8.self)
         else { return }
+        if normalizedOrientation == 1 {
+          for pixel in 0..<(width * height) {
+            compositeOpaquePixel(
+              sourcePixels: sourcePixels,
+              sourceIndex: pixel * 4,
+              destinationPixels: destinationPixels,
+              destinationIndex: pixel * 3
+            )
+          }
+          return
+        }
         for y in 0..<orientedHeight {
           for x in 0..<orientedWidth {
             let sourceX: Int
             let sourceY: Int
-            switch orientation {
+            switch normalizedOrientation {
+            case 1:
+              sourceX = x
+              sourceY = y
             case 2:
               sourceX = width - 1 - x
               sourceY = y
@@ -614,20 +734,41 @@ public final class ImageSanitizer: Sendable {
             case 7:
               sourceX = width - 1 - y
               sourceY = height - 1 - x
-            default:
+            case 8:
               sourceX = width - 1 - y
               sourceY = x
+            default:
+              sourceX = x
+              sourceY = y
             }
-            let sourceIndex = (sourceY * width + sourceX) * 3
+            let sourceIndex = (sourceY * width + sourceX) * 4
             let destinationIndex = (y * orientedWidth + x) * 3
-            destinationPixels[destinationIndex] = sourcePixels[sourceIndex]
-            destinationPixels[destinationIndex + 1] = sourcePixels[sourceIndex + 1]
-            destinationPixels[destinationIndex + 2] = sourcePixels[sourceIndex + 2]
+            compositeOpaquePixel(
+              sourcePixels: sourcePixels,
+              sourceIndex: sourceIndex,
+              destinationPixels: destinationPixels,
+              destinationIndex: destinationIndex
+            )
           }
         }
       }
     }
     return (oriented, orientedWidth, orientedHeight)
+  }
+
+  private func compositeOpaquePixel(
+    sourcePixels: UnsafePointer<UInt8>,
+    sourceIndex: Int,
+    destinationPixels: UnsafeMutablePointer<UInt8>,
+    destinationIndex: Int
+  ) {
+    let sanitizedAlpha = quantizedAlpha(Int(sourcePixels[sourceIndex + 3]))
+    for channel in 0..<3 {
+      let straight = Int(sourcePixels[sourceIndex + channel])
+      let composited =
+        (straight * sanitizedAlpha + 255 * (255 - sanitizedAlpha) + 127) / 255
+      destinationPixels[destinationIndex + channel] = UInt8(clamping: composited)
+    }
   }
 
   /// Removes low-bit alpha payloads before compositing. 254/255 become fully opaque;
@@ -829,6 +970,48 @@ public final class ImageSanitizer: Sendable {
     }
   }
 
+  /// A sandboxed encoder has already inflated, decoded, and fully verified its
+  /// reply. The app repeats only the Swift container checks; in-process callers
+  /// perform the complete zlib validation here as before.
+  private func verifyProducedCanonicalPNG(_ data: Data) throws -> PNGInspection {
+    if isolatedEncoder != nil {
+      return try PNGInspector.verifyCanonicalStructure(data)
+    }
+    return try PNGInspector.verifyCanonical(data)
+  }
+
+  /// Opens one regular, non-symlink inode and lends that exact descriptor to
+  /// the isolated decoder. File-based operations therefore do not fault the
+  /// entire compressed input into the app or create a second transfer file.
+  private func withInputFileHandle<Result>(
+    at url: URL,
+    _ body: (FileHandle, Int) throws -> Result
+  ) throws -> Result {
+    let descriptor = url.path.withCString {
+      open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+    }
+    guard descriptor >= 0 else {
+      if errno == ELOOP { throw MetaShieldError.symbolicLinkNotAllowed }
+      throw MetaShieldError.fileOperationFailed(String(cString: strerror(errno)))
+    }
+    defer { close(descriptor) }
+
+    var state = stat()
+    guard fstat(descriptor, &state) == 0 else {
+      throw MetaShieldError.fileOperationFailed(String(cString: strerror(errno)))
+    }
+    guard state.st_mode & S_IFMT == S_IFREG else {
+      throw MetaShieldError.notARegularFile
+    }
+    guard state.st_size >= 0, UInt64(state.st_size) <= UInt64(Int.max) else {
+      throw MetaShieldError.inputFileTooLarge(byteCount: Int.max, limit: maximumInputByteCount)
+    }
+    let byteCount = Int(state.st_size)
+    try validateInputByteCount(byteCount)
+    let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+    return try body(handle, byteCount)
+  }
+
   /// Open once with O_NOFOLLOW and decode the exact inode represented by that
   /// descriptor. This closes the validate-then-open symlink race without eagerly
   /// copying an input of up to hundreds of megabytes into heap memory.
@@ -914,11 +1097,7 @@ public final class ImageSanitizer: Sendable {
     do {
       try writeTemporaryDataSecurely(data, to: tempURL, permissions: 0o644)
       try synchronizeFile(at: tempURL)
-      let reread = try Data(contentsOf: tempURL, options: [.mappedIfSafe])
-      let finalInspection = try PNGInspector.verifyCanonical(reread)
-      guard finalInspection == inspection, reread == data else {
-        throw MetaShieldError.verificationFailed("저장 전후 내용이 달라졌습니다.")
-      }
+      try verifyFileContents(at: tempURL, equalTo: data)
 
       if replaceExisting {
         try atomicReplace(source: tempURL, destination: url)
@@ -963,10 +1142,7 @@ public final class ImageSanitizer: Sendable {
       try synchronizeFile(at: tempURL)
       // Byte equality, not a decode: opening these bytes with ImageIO here
       // would undo the point of decoding them in the isolated service.
-      let reread = try Data(contentsOf: tempURL, options: [.mappedIfSafe])
-      guard reread == data else {
-        throw MetaShieldError.verificationFailed("저장 전후 내용이 달라졌습니다.")
-      }
+      try verifyFileContents(at: tempURL, equalTo: data)
 
       let result = tempURL.path.withCString { sourcePath in
         url.path.withCString { destinationPath in
@@ -997,6 +1173,72 @@ public final class ImageSanitizer: Sendable {
         || image.alphaInfo == .noneSkipLast
     else {
       throw MetaShieldError.verificationFailed("결과 이미지 디코딩 또는 RGB 검사에 실패했습니다.")
+    }
+  }
+
+  /// Confirms the exact bytes that reached disk without retaining a second
+  /// output-sized mapping in memory. The descriptor is opened with O_NOFOLLOW
+  /// and the size is fixed before comparison; `pread` keeps each chunk tied to
+  /// that same inode even if a pathname is changed concurrently.
+  private func verifyFileContents(at url: URL, equalTo expected: Data) throws {
+    let descriptor = url.path.withCString {
+      open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+    }
+    guard descriptor >= 0 else {
+      if errno == ELOOP { throw MetaShieldError.symbolicLinkNotAllowed }
+      throw MetaShieldError.fileOperationFailed(String(cString: strerror(errno)))
+    }
+    defer { close(descriptor) }
+
+    var state = stat()
+    guard fstat(descriptor, &state) == 0 else {
+      throw MetaShieldError.fileOperationFailed(String(cString: strerror(errno)))
+    }
+    guard state.st_mode & S_IFMT == S_IFREG, state.st_size == expected.count else {
+      throw MetaShieldError.verificationFailed("저장 전후 내용이 달라졌습니다.")
+    }
+
+    let chunkByteCount = 1 * 1_024 * 1_024
+    var buffer = [UInt8](repeating: 0, count: min(chunkByteCount, max(1, expected.count)))
+    let matches = expected.withUnsafeBytes { source -> Bool in
+      guard let sourceBase = source.baseAddress else { return expected.isEmpty }
+      var offset = 0
+      while offset < expected.count {
+        let requested = min(buffer.count, expected.count - offset)
+        var filled = 0
+        while filled < requested {
+          errno = 0
+          let bytesRead = buffer.withUnsafeMutableBytes { destination in
+            pread(
+              descriptor,
+              destination.baseAddress?.advanced(by: filled),
+              requested - filled,
+              off_t(offset + filled))
+          }
+          if bytesRead < 0, errno == EINTR { continue }
+          guard bytesRead > 0 else { return false }
+          filled += bytesRead
+        }
+        let equal = buffer.withUnsafeBytes { destination in
+          memcmp(sourceBase.advanced(by: offset), destination.baseAddress, requested) == 0
+        }
+        guard equal else { return false }
+        offset += requested
+      }
+      return true
+    }
+    guard matches else {
+      throw MetaShieldError.verificationFailed("저장 전후 내용이 달라졌습니다.")
+    }
+
+    // Catch a concurrent truncate or append that happened after the first
+    // `fstat`. The descriptor still names the same inode throughout.
+    var finalState = stat()
+    guard fstat(descriptor, &finalState) == 0 else {
+      throw MetaShieldError.fileOperationFailed(String(cString: strerror(errno)))
+    }
+    guard finalState.st_mode & S_IFMT == S_IFREG, finalState.st_size == expected.count else {
+      throw MetaShieldError.verificationFailed("저장 전후 내용이 달라졌습니다.")
     }
   }
 

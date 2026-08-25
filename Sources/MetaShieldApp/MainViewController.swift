@@ -873,6 +873,10 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     showStatus("사진 앱에서 원본 데이터를 받는 중…", isError: false)
     let queue = OperationQueue()
     queue.qualityOfService = .userInitiated
+    // A provider can materialize a full-resolution original per operation.
+    // Receiving serially bounds the batch's live memory and disk-write burst
+    // without changing which promised files are accepted.
+    queue.maxConcurrentOperationCount = 1
     let coordinator = FilePromiseReceptionCoordinator(
       receiverCount: promises.count,
       destinationDirectory: directory
@@ -897,6 +901,9 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
           self.receiveFileURLs(received)
         }
       }
+    }
+    coordinator.startResourceMonitor {
+      queue.cancelAllOperations()
     }
 
     for (index, promise) in promises.enumerated() {

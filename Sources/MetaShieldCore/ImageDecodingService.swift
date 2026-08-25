@@ -73,7 +73,8 @@ public final class ImageDecodingRequest: NSObject, NSSecureCoding {
   }
 }
 
-/// What comes back. The encoded bytes are still re-verified by the app.
+/// What comes back. The service fully verifies encoded bytes before replying;
+/// the app repeats bounds-checked container and byte-for-byte write checks.
 @objc(MetaShieldImageDecodingResponse)
 public final class ImageDecodingResponse: NSObject, NSSecureCoding {
   public static var supportsSecureCoding: Bool { true }

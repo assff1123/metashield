@@ -14,6 +14,7 @@ final class DecodingService: NSObject, ImageDecodingServiceProtocol, @unchecked 
   /// Absolute ceilings, independent of anything the caller sends.
   private static let absoluteMaximumPixelCount = 40_000_000
   private static let absoluteMaximumInputByteCount = 256 * 1_024 * 1_024
+  private static let absoluteMaximumOutputByteCount = 256 * 1_024 * 1_024
   private static let readChunkByteCount = 4 * 1_024 * 1_024
 
   func sanitizeImage(
@@ -31,6 +32,9 @@ final class DecodingService: NSObject, ImageDecodingServiceProtocol, @unchecked 
           from: data, quality: .compressed(request.compressionQuality))
       } else {
         (encoded, size) = try sanitizer.encodedSanitizedPNG(from: data)
+      }
+      guard encoded.count <= Self.absoluteMaximumOutputByteCount else {
+        throw MetaShieldError.verificationFailed("정리된 이미지가 출력 크기 제한을 넘었습니다.")
       }
       return ImageDecodingResponse(encoded: encoded, width: size.width, height: size.height)
     }
@@ -56,7 +60,10 @@ final class DecodingService: NSObject, ImageDecodingServiceProtocol, @unchecked 
     work: () throws -> ImageDecodingResponse
   ) {
     do {
-      reply(try work(), nil)
+      // XPC services are long-lived. Drain ImageIO/CoreGraphics temporary
+      // objects after every request so batches do not retain prior frames.
+      let response = try autoreleasepool(invoking: work)
+      reply(response, nil)
     } catch {
       reply(nil, error.localizedDescription)
     }
@@ -68,6 +75,19 @@ final class DecodingService: NSObject, ImageDecodingServiceProtocol, @unchecked 
     // instead of being handed straight to a precondition.
     guard request.maximumPixelCount > 0, request.maximumInputByteCount > 0 else {
       throw MetaShieldError.verificationFailed("요청한 처리 한도가 올바르지 않습니다.")
+    }
+    guard
+      request.outputFormat == ImageDecodingRequest.pngFormat
+        || request.outputFormat == ImageDecodingRequest.avifFormat
+    else {
+      throw MetaShieldError.verificationFailed("요청한 출력 형식이 올바르지 않습니다.")
+    }
+    if request.outputFormat == ImageDecodingRequest.avifFormat {
+      guard request.compressionQuality.isFinite,
+        (0...1).contains(request.compressionQuality)
+      else {
+        throw MetaShieldError.verificationFailed("요청한 AVIF 품질 값이 올바르지 않습니다.")
+      }
     }
     return ImageSanitizer(
       maximumPixelCount: min(request.maximumPixelCount, absoluteMaximumPixelCount),

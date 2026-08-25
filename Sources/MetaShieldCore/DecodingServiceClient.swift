@@ -19,6 +19,17 @@ public protocol CanonicalImageEncoding: Sendable {
   ) throws -> (width: Int, height: Int)
 }
 
+/// Optional fast path for a caller that already opened and validated a file.
+/// Passing its descriptor avoids mapping the whole input in the app and then
+/// writing a second transfer copy before XPC can read it.
+public protocol CanonicalImageDescriptorEncoding: CanonicalImageEncoding {
+  func encodedSanitizedPNG(from handle: FileHandle) throws -> (Data, (width: Int, height: Int))
+  func encodedSanitizedAVIF(
+    from handle: FileHandle,
+    quality: AVIFQuality
+  ) throws -> (Data, (width: Int, height: Int))
+}
+
 extension ImageSanitizer: CanonicalImageEncoding {}
 
 /// Talks to the sandboxed decoder.
@@ -26,7 +37,9 @@ extension ImageSanitizer: CanonicalImageEncoding {}
 /// Calls are synchronous because the callers already run on a background queue,
 /// and because a half-finished sanitization has no useful meaning: the app needs
 /// the bytes before it can verify and write them.
-public final class DecodingServiceClient: CanonicalImageEncoding, @unchecked Sendable {
+public final class DecodingServiceClient: CanonicalImageDescriptorEncoding, @unchecked Sendable {
+  private static let maximumOutputByteCount = 256 * 1_024 * 1_024
+
   public enum ClientError: LocalizedError {
     case unavailable
     case timedOut
@@ -46,18 +59,30 @@ public final class DecodingServiceClient: CanonicalImageEncoding, @unchecked Sen
 
   private let serviceName: String
   private let timeout: TimeInterval
+  public let maximumPixelCount: Int
+  public let maximumInputByteCount: Int
 
   public init(
     serviceName: String = ImageDecodingServiceIdentity.bundleIdentifier,
-    timeout: TimeInterval = 120
+    timeout: TimeInterval = 120,
+    maximumPixelCount: Int = 40_000_000,
+    maximumInputByteCount: Int = 256 * 1_024 * 1_024
   ) {
     self.serviceName = serviceName
     self.timeout = timeout
+    self.maximumPixelCount = maximumPixelCount
+    self.maximumInputByteCount = maximumInputByteCount
   }
 
   public func encodedSanitizedPNG(from sourceData: Data) throws -> (Data, (width: Int, height: Int))
   {
     try run(sourceData, format: ImageDecodingRequest.pngFormat, quality: 0)
+  }
+
+  public func encodedSanitizedPNG(from handle: FileHandle) throws
+    -> (Data, (width: Int, height: Int))
+  {
+    try run(handle: handle, format: ImageDecodingRequest.pngFormat, quality: 0)
   }
 
   public func encodedSanitizedAVIF(
@@ -66,6 +91,17 @@ public final class DecodingServiceClient: CanonicalImageEncoding, @unchecked Sen
   ) throws -> (Data, (width: Int, height: Int)) {
     try run(
       sourceData,
+      format: ImageDecodingRequest.avifFormat,
+      quality: quality.compressionValue
+    )
+  }
+
+  public func encodedSanitizedAVIF(
+    from handle: FileHandle,
+    quality: AVIFQuality
+  ) throws -> (Data, (width: Int, height: Int)) {
+    try run(
+      handle: handle,
       format: ImageDecodingRequest.avifFormat,
       quality: quality.compressionValue
     )
@@ -91,6 +127,21 @@ public final class DecodingServiceClient: CanonicalImageEncoding, @unchecked Sen
       try? handle.close()
       try? FileManager.default.removeItem(at: temporaryURL)
     }
+
+    return try run(
+      handle: handle,
+      format: format,
+      quality: quality,
+      verifyOnly: verifyOnly
+    )
+  }
+
+  private func run(
+    handle: FileHandle,
+    format: String,
+    quality: Double,
+    verifyOnly: Bool = false
+  ) throws -> (Data, (width: Int, height: Int)) {
 
     let connection = NSXPCConnection(serviceName: serviceName)
     connection.remoteObjectInterface = Self.makeInterface()
@@ -124,13 +175,17 @@ public final class DecodingServiceClient: CanonicalImageEncoding, @unchecked Sen
     }
 
     let response = try box.wait(timeout: timeout)
+    guard response.width > 0,
+      response.height > 0,
+      response.width <= Int.max / response.height,
+      response.width * response.height <= maximumPixelCount,
+      response.encoded.count <= Self.maximumOutputByteCount,
+      verifyOnly ? response.encoded.isEmpty : !response.encoded.isEmpty
+    else {
+      throw ClientError.remote("격리된 디코더가 올바르지 않은 응답을 보냈습니다.")
+    }
     return (response.encoded, (response.width, response.height))
   }
-
-  /// Limits are carried in the request so the service enforces the same ceilings
-  /// the app would have enforced in process.
-  public var maximumPixelCount: Int = 40_000_000
-  public var maximumInputByteCount: Int = 256 * 1_024 * 1_024
 
   private func makeTransferHandle(for data: Data) throws -> (FileHandle, URL) {
     let directory = FileManager.default.temporaryDirectory

@@ -84,6 +84,135 @@ private func makeImageData(type: CFString, count: Int = 1, metadata: Bool) throw
   return output as Data
 }
 
+private func makeOrientationFixture(_ orientation: Int) throws -> Data {
+  // Six opaque, distinct pixels in a non-square frame make every EXIF
+  // orientation distinguishable without introducing lossy comparisons.
+  let pixels = Data([
+    255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255,
+    255, 255, 0, 255, 255, 0, 255, 255, 0, 255, 255, 255,
+  ])
+  let space = CGColorSpace(name: CGColorSpace.sRGB)!
+  let provider = CGDataProvider(data: pixels as CFData)!
+  guard
+    let image = CGImage(
+      width: 3,
+      height: 2,
+      bitsPerComponent: 8,
+      bitsPerPixel: 32,
+      bytesPerRow: 12,
+      space: space,
+      bitmapInfo: CGBitmapInfo(
+        rawValue: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue
+      ),
+      provider: provider,
+      decode: nil,
+      shouldInterpolate: false,
+      intent: .defaultIntent
+    )
+  else {
+    throw MetaShieldError.bitmapAllocationFailed
+  }
+  let output = NSMutableData()
+  guard
+    let destination = CGImageDestinationCreateWithData(
+      output, "public.tiff" as CFString, 1, nil)
+  else {
+    throw MetaShieldError.imageEncodingFailed
+  }
+  CGImageDestinationAddImage(
+    destination,
+    image,
+    [kCGImagePropertyOrientation: orientation] as CFDictionary
+  )
+  guard CGImageDestinationFinalize(destination) else {
+    throw MetaShieldError.imageEncodingFailed
+  }
+  return output as Data
+}
+
+private func decodedRGB(_ data: Data) throws -> (pixels: Data, width: Int, height: Int) {
+  guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+    let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+    let space = CGColorSpace(name: CGColorSpace.sRGB)
+  else {
+    throw MetaShieldError.unsupportedOrCorruptImage
+  }
+  var rgba = Data(count: image.width * image.height * 4)
+  let rendered = rgba.withUnsafeMutableBytes { bytes -> Bool in
+    guard let address = bytes.baseAddress,
+      let context = CGContext(
+        data: address,
+        width: image.width,
+        height: image.height,
+        bitsPerComponent: 8,
+        bytesPerRow: image.width * 4,
+        space: space,
+        bitmapInfo: CGBitmapInfo(
+          rawValue: CGBitmapInfo.byteOrder32Big.rawValue
+            | CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+      )
+    else { return false }
+    context.setBlendMode(.copy)
+    context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    return true
+  }
+  guard rendered else { throw MetaShieldError.bitmapAllocationFailed }
+  var rgb = Data(count: image.width * image.height * 3)
+  rgba.withUnsafeBytes { sourceBytes in
+    rgb.withUnsafeMutableBytes { destinationBytes in
+      guard let sourcePixels = sourceBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        let destinationPixels = destinationBytes.baseAddress?.assumingMemoryBound(to: UInt8.self)
+      else { return }
+      for pixel in 0..<(image.width * image.height) {
+        for channel in 0..<3 {
+          destinationPixels[pixel * 3 + channel] = sourcePixels[pixel * 4 + channel]
+        }
+      }
+    }
+  }
+  return (rgb, image.width, image.height)
+}
+
+private func orientedRGB(
+  _ source: Data,
+  width: Int,
+  height: Int,
+  orientation: Int
+) -> (pixels: Data, width: Int, height: Int) {
+  let isTransposed = orientation >= 5
+  let outputWidth = isTransposed ? height : width
+  let outputHeight = isTransposed ? width : height
+  var output = Data(count: source.count)
+  source.withUnsafeBytes { sourceBytes in
+    output.withUnsafeMutableBytes { outputBytes in
+      guard let sourcePixels = sourceBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
+        let outputPixels = outputBytes.baseAddress?.assumingMemoryBound(to: UInt8.self)
+      else { return }
+      for y in 0..<outputHeight {
+        for x in 0..<outputWidth {
+          let sourceX: Int
+          let sourceY: Int
+          switch orientation {
+          case 1: (sourceX, sourceY) = (x, y)
+          case 2: (sourceX, sourceY) = (width - 1 - x, y)
+          case 3: (sourceX, sourceY) = (width - 1 - x, height - 1 - y)
+          case 4: (sourceX, sourceY) = (x, height - 1 - y)
+          case 5: (sourceX, sourceY) = (y, x)
+          case 6: (sourceX, sourceY) = (y, height - 1 - x)
+          case 7: (sourceX, sourceY) = (width - 1 - y, height - 1 - x)
+          default: (sourceX, sourceY) = (width - 1 - y, x)
+          }
+          let sourceIndex = (sourceY * width + sourceX) * 3
+          let outputIndex = (y * outputWidth + x) * 3
+          memcpy(outputPixels.advanced(by: outputIndex), sourcePixels.advanced(by: sourceIndex), 3)
+        }
+      }
+    }
+  }
+  return (output, outputWidth, outputHeight)
+}
+
 private func runProcess(_ executable: String, arguments: [String], captureOutput: Bool = false)
   throws -> (Int32, Data)
 {
@@ -653,6 +782,9 @@ private func testHiddenChunkPayloadsAreRejected() throws {
   }
 
   let trailingIDAT = try appendingPayload(Data("SECRET".utf8), toChunk: "IDAT", in: canonical)
+  // The host-side parser intentionally checks only the canonical container.
+  // Full zlib validation belongs to the sandboxed decoder service.
+  _ = try PNGInspector.verifyCanonicalStructure(trailingIDAT)
   do {
     _ = try PNGInspector.verifyCanonical(trailingIDAT)
     throw SelfTestError.assertion("zlib 스트림 뒤의 IDAT 데이터를 허용했습니다.")
@@ -664,6 +796,7 @@ private func testHiddenChunkPayloadsAreRejected() throws {
 
   let originalStream = try payload(ofChunk: "IDAT", in: canonical)
   let concatenatedIDAT = try appendingPayload(originalStream, toChunk: "IDAT", in: canonical)
+  _ = try PNGInspector.verifyCanonicalStructure(concatenatedIDAT)
   do {
     _ = try PNGInspector.verifyCanonical(concatenatedIDAT)
     throw SelfTestError.assertion("연결된 두 번째 zlib 스트림을 허용했습니다.")
@@ -671,6 +804,35 @@ private func testHiddenChunkPayloadsAreRejected() throws {
     throw error
   } catch MetaShieldError.verificationFailed {
     // Expected.
+  }
+}
+
+private func testAllEXIFOrientationsArePreserved() throws {
+  let sanitizer = ImageSanitizer()
+  let baselineInput = try makeOrientationFixture(1)
+  let baseline = try decodedRGB(sanitizer.makeCanonicalPNG(from: baselineInput))
+  try expect(baseline.width == 3 && baseline.height == 2, "기준 방향의 크기가 달라졌습니다.")
+
+  for orientation in 1...8 {
+    let input = try makeOrientationFixture(orientation)
+    guard let source = CGImageSourceCreateWithData(input as CFData, nil),
+      let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+      properties[kCGImagePropertyOrientation] as? Int == orientation
+    else {
+      throw SelfTestError.assertion("EXIF 방향 (orientation) 테스트 입력을 만들지 못했습니다.")
+    }
+    let actual = try decodedRGB(sanitizer.makeCanonicalPNG(from: input))
+    let expected = orientedRGB(
+      baseline.pixels,
+      width: baseline.width,
+      height: baseline.height,
+      orientation: orientation
+    )
+    try expect(
+      actual.width == expected.width && actual.height == expected.height,
+      "EXIF 방향 (orientation)의 출력 크기가 잘못됐습니다."
+    )
+    try expect(actual.pixels == expected.pixels, "EXIF 방향 (orientation)의 픽셀이 달라졌습니다.")
   }
 }
 
@@ -1320,6 +1482,7 @@ let tests: [(String, () throws -> Void)] = [
   ("기존 출력 파일 보존", testExistingDestinationIsPreserved),
   ("PNG 꼬리 데이터 거부", testTrailingPNGDataIsRejected),
   ("IEND·IDAT 숨은 페이로드 거부", testHiddenChunkPayloadsAreRejected),
+  ("EXIF 방향 1~8 보존", testAllEXIFOrientationsArePreserved),
   ("변조 PNG 코퍼스 원본 안전", testMalformedCorpusNeverCorruptsInput),
   ("사진 앱 권한 설정 마커", testPhotoPermissionSetupMarker),
   ("AVIF 변환이 메타데이터를 남기지 않음", testAVIFExportRemovesMetadata),
