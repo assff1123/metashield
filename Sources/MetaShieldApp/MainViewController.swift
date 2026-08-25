@@ -484,7 +484,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
       var successes: [URL] = []
       var failures: [ProcessingFailure] = []
       var photosOutputs: [URL] = []
-      let sanitizer = ImageSanitizer()
+      let sanitizer = SanitizerFactory.makeSanitizer()
 
       if case .convertToAVIF(let quality) = operation {
         // Conversion never replaces a source: every input becomes a new file.
@@ -619,7 +619,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     beginProcessing(operation)
     DispatchQueue.global(qos: .userInitiated).async { [self] in
       do {
-        let sanitizer = ImageSanitizer()
+        let sanitizer = SanitizerFactory.makeSanitizer()
         let report: SanitizationReport
         if case .convertToAVIF(let quality) = operation {
           report = try sanitizer.writeCanonicalAVIF(

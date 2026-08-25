@@ -13,15 +13,23 @@ SHARE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "
 HOST_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROJECT_DIR/packaging/Info.plist")
 SHARE_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROJECT_DIR/packaging/share/Info.plist")
 
+DECODE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROJECT_DIR/packaging/decode/Info.plist")
+DECODE_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROJECT_DIR/packaging/decode/Info.plist")
+
 if [[ "$HOST_VERSION:$HOST_BUILD" != "$SHARE_VERSION:$SHARE_BUILD" ]]; then
     echo "앱·공유 확장의 버전 또는 빌드 번호가 일치하지 않습니다." >&2
+    exit 1
+fi
+if [[ "$HOST_VERSION:$HOST_BUILD" != "$DECODE_VERSION:$DECODE_BUILD" ]]; then
+    echo "앱·디코드 서비스의 버전 또는 빌드 번호가 일치하지 않습니다." >&2
     exit 1
 fi
 
 mkdir -p "$OUTPUT_DIR" "$DEVELOPER_OUTPUT_DIR" "$WORK_DIR"
 rm -rf "$APP_TEMP"
 mkdir -p "$APP_TEMP/Contents/MacOS" "$APP_TEMP/Contents/Resources" \
-    "$APP_TEMP/Contents/PlugIns/MetaShield Share.appex/Contents/MacOS"
+    "$APP_TEMP/Contents/PlugIns/MetaShield Share.appex/Contents/MacOS" \
+    "$APP_TEMP/Contents/XPCServices/MetaShieldDecodeService.xpc/Contents/MacOS"
 
 build_product() {
     local arch=$1
@@ -48,6 +56,13 @@ build_product() {
         -c release \
         -Xswiftc -warnings-as-errors \
         --product MetaShieldShare
+    swift build \
+        --package-path "$PROJECT_DIR" \
+        --build-path "$build_dir" \
+        --triple "$triple" \
+        -c release \
+        -Xswiftc -warnings-as-errors \
+        --product MetaShieldDecodeService
 }
 
 build_product arm64
@@ -61,12 +76,18 @@ build_product x86_64
 /usr/bin/lipo -create \
     "$WORK_DIR/build-arm64/arm64-apple-macosx/release/metashield-cli" \
     "$WORK_DIR/build-x86_64/x86_64-apple-macosx/release/metashield-cli" \
-    -output "$APP_TEMP/Contents/Resources/metashield-cli"
+    -output "$APP_TEMP/Contents/MacOS/metashield-cli"
 
 /usr/bin/lipo -create \
     "$WORK_DIR/build-arm64/arm64-apple-macosx/release/MetaShieldShare" \
     "$WORK_DIR/build-x86_64/x86_64-apple-macosx/release/MetaShieldShare" \
     -output "$APP_TEMP/Contents/PlugIns/MetaShield Share.appex/Contents/MacOS/MetaShieldShare"
+
+DECODE_SERVICE="$APP_TEMP/Contents/XPCServices/MetaShieldDecodeService.xpc"
+/usr/bin/lipo -create \
+    "$WORK_DIR/build-arm64/arm64-apple-macosx/release/MetaShieldDecodeService" \
+    "$WORK_DIR/build-x86_64/x86_64-apple-macosx/release/MetaShieldDecodeService" \
+    -output "$DECODE_SERVICE/Contents/MacOS/MetaShieldDecodeService"
 
 # SwiftPM records the build machine's toolchain in LC_RPATH. No load command
 # uses @rpath, so the entry is dead weight that also leaks a local layout.
@@ -81,20 +102,26 @@ strip_toolchain_rpath() {
 }
 
 strip_toolchain_rpath "$APP_TEMP/Contents/MacOS/MetaShield"
-strip_toolchain_rpath "$APP_TEMP/Contents/Resources/metashield-cli"
+strip_toolchain_rpath "$APP_TEMP/Contents/MacOS/metashield-cli"
 strip_toolchain_rpath "$APP_TEMP/Contents/PlugIns/MetaShield Share.appex/Contents/MacOS/MetaShieldShare"
+strip_toolchain_rpath "$DECODE_SERVICE/Contents/MacOS/MetaShieldDecodeService"
 
 /bin/cp "$PROJECT_DIR/packaging/Info.plist" "$APP_TEMP/Contents/Info.plist"
 /bin/cp "$PROJECT_DIR/packaging/share/Info.plist" \
     "$APP_TEMP/Contents/PlugIns/MetaShield Share.appex/Contents/Info.plist"
+/bin/cp "$PROJECT_DIR/packaging/decode/Info.plist" "$DECODE_SERVICE/Contents/Info.plist"
 /usr/bin/swift "$PROJECT_DIR/scripts/make-icon.swift" "$APP_TEMP/Contents/Resources/AppIcon.icns"
 /usr/bin/plutil -lint "$APP_TEMP/Contents/Info.plist"
 /usr/bin/plutil -lint "$APP_TEMP/Contents/PlugIns/MetaShield Share.appex/Contents/Info.plist"
+/usr/bin/plutil -lint "$DECODE_SERVICE/Contents/Info.plist"
 
 # Sign from the innermost code outward. Public releases must be re-signed and
 # notarized with scripts/sign-and-notarize.sh.
 /usr/bin/codesign --force --options runtime --sign - \
-    "$APP_TEMP/Contents/Resources/metashield-cli"
+    "$APP_TEMP/Contents/MacOS/metashield-cli"
+/usr/bin/codesign --force --options runtime \
+    --entitlements "$PROJECT_DIR/packaging/decode/MetaShieldDecode.entitlements" \
+    --sign - "$DECODE_SERVICE"
 /usr/bin/codesign --force --options runtime \
     --entitlements "$PROJECT_DIR/packaging/MetaShieldShare.entitlements" \
     --sign - "$APP_TEMP/Contents/PlugIns/MetaShield Share.appex"

@@ -25,6 +25,35 @@ guard !arguments.isEmpty, arguments.first != "--help", arguments.first != "-h" e
   exit(arguments.isEmpty ? 64 : 0)
 }
 
+// A release check needs to prove that the isolated decoder is reachable and
+// produces the same bytes as the in-process path. Only meaningful when this
+// binary runs from inside the app bundle, where the service lives.
+if arguments.first == "--xpc-self-test" {
+  let sanitizer = ImageSanitizer()
+  let client = DecodingServiceClient()
+  do {
+    let sample = try Data(contentsOf: URL(fileURLWithPath: arguments.dropFirst().first ?? ""))
+    let (local, localSize) = try sanitizer.encodedSanitizedPNG(from: sample)
+    let (remote, remoteSize) = try client.encodedSanitizedPNG(from: sample)
+    print("격리 디코더 연결: OK")
+    print("  크기 일치: \(localSize == remoteSize) (\(remoteSize.width)×\(remoteSize.height))")
+    print("  바이트 일치: \(local == remote) (\(remote.count) bytes)")
+    exit(local == remote && localSize == remoteSize ? 0 : 1)
+  } catch {
+    fputs("격리 디코더 실패: \(error.localizedDescription)\n", stderr)
+    exit(1)
+  }
+}
+
+// Inside the app bundle the isolated decoder is available and used. Run
+// standalone (a plain `swift build` binary) there is no service, so decoding
+// happens in process; that path is for development and scripting.
+let isolatedEncoder: CanonicalImageEncoding? =
+  FileManager.default.fileExists(
+    atPath: Bundle.main.bundlePath + "/Contents/XPCServices/MetaShieldDecodeService.xpc")
+  ? DecodingServiceClient() : nil
+let sanitizer = ImageSanitizer(isolatedEncoder: isolatedEncoder)
+
 let verifyOnly = arguments.first == "--verify"
 let quickAction = arguments.first == "--quick-action"
 let avifMode = arguments.first == "--avif"
@@ -59,7 +88,7 @@ for path in paths {
   let url = URL(fileURLWithPath: path)
   do {
     if verifyOnly {
-      let inspection = try ImageSanitizer.shared.verifyCanonicalPNG(at: url)
+      let inspection = try sanitizer.verifyCanonicalPNG(at: url)
       print(
         "검증 완료: \(path) — \(inspection.width)×\(inspection.height), \(inspection.chunkTypes.joined(separator: ","))"
       )
@@ -70,7 +99,7 @@ for path in paths {
         in: url.deletingLastPathComponent(),
         baseName: url.deletingPathExtension().lastPathComponent
       )
-      let report = try ImageSanitizer.shared.writeCanonicalAVIF(
+      let report = try sanitizer.writeCanonicalAVIF(
         from: url, to: destination, quality: avifQuality)
       let saved =
         report.originalByteCount > 0
@@ -85,10 +114,10 @@ for path in paths {
         in: url.deletingLastPathComponent(),
         baseName: url.deletingPathExtension().lastPathComponent
       )
-      let report = try ImageSanitizer.shared.writeCanonicalPNG(from: url, to: destination)
+      let report = try sanitizer.writeCanonicalPNG(from: url, to: destination)
       print("완료: \(path) → \(report.url.path) — \(report.width)×\(report.height)")
     } else {
-      let report = try ImageSanitizer.shared.sanitizePNGInPlace(at: url)
+      let report = try sanitizer.sanitizePNGInPlace(at: url)
       print(
         "완료: \(path) — \(report.width)×\(report.height), \(report.originalByteCount) → \(report.sanitizedByteCount) bytes"
       )

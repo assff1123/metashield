@@ -19,28 +19,32 @@ public final class ImageSanitizer: Sendable {
   public let maximumPixelCount: Int
   public let maximumInputByteCount: Int
 
+  /// Where decoding happens.
+  ///
+  /// `nil` means this process does it, which is what the command-line tool and
+  /// the self tests use. The app passes an isolated decoder so that the code
+  /// reading untrusted image bytes runs in a sandbox instead of with the user's
+  /// full privileges. File handling and verification stay here either way.
+  private let isolatedEncoder: CanonicalImageEncoding?
+
   public init(
     maximumPixelCount: Int = 40_000_000,
-    maximumInputByteCount: Int = 256 * 1_024 * 1_024
+    maximumInputByteCount: Int = 256 * 1_024 * 1_024,
+    isolatedEncoder: CanonicalImageEncoding? = nil
   ) {
     precondition(maximumPixelCount > 0)
     precondition(maximumInputByteCount > 0)
     self.maximumPixelCount = maximumPixelCount
     self.maximumInputByteCount = maximumInputByteCount
+    self.isolatedEncoder = isolatedEncoder
   }
 
   public func makeCanonicalPNG(from sourceData: Data) throws -> Data {
     try validateInputByteCount(sourceData.count)
-    guard
-      let source = CGImageSourceCreateWithData(
-        sourceData as CFData,
-        [
-          kCGImageSourceShouldCache: false
-        ] as CFDictionary)
-    else {
-      throw MetaShieldError.unsupportedOrCorruptImage
+    if let isolatedEncoder {
+      return try isolatedEncoder.encodedSanitizedPNG(from: sourceData).0
     }
-    return try makeCanonicalPNG(from: source)
+    return try encodedSanitizedPNG(from: sourceData).0
   }
 
   public func makeCanonicalPNG(from sourceURL: URL) throws -> Data {
@@ -145,6 +149,50 @@ public final class ImageSanitizer: Sendable {
     )
   }
 
+  /// Decodes and re-encodes without touching the file system.
+  ///
+  /// These are what the isolated decoder runs. Keeping them here means the
+  /// sanitizing pipeline has exactly one implementation, whether it is invoked
+  /// in the service or directly by the command-line tool.
+  public func encodedSanitizedPNG(from sourceData: Data) throws -> (Data, (width: Int, height: Int))
+  {
+    try validateInputByteCount(sourceData.count)
+    guard
+      let source = CGImageSourceCreateWithData(
+        sourceData as CFData, [kCGImageSourceShouldCache: false] as CFDictionary)
+    else {
+      throw MetaShieldError.unsupportedOrCorruptImage
+    }
+    let image = try makeSanitizedImage(from: source)
+    let encoded = try PNGInspector.canonicalData(
+      from: try encode(image, as: "public.png", options: nil))
+    return (encoded, (image.width, image.height))
+  }
+
+  public func encodedSanitizedAVIF(
+    from sourceData: Data,
+    quality: AVIFQuality
+  ) throws -> (Data, (width: Int, height: Int)) {
+    try validateInputByteCount(sourceData.count)
+    guard
+      let source = CGImageSourceCreateWithData(
+        sourceData as CFData, [kCGImageSourceShouldCache: false] as CFDictionary)
+    else {
+      throw MetaShieldError.unsupportedOrCorruptImage
+    }
+    guard AVIFInspector.isEncodingAvailable else {
+      throw MetaShieldError.avifEncodingUnavailable
+    }
+    let image = try makeSanitizedImage(from: source)
+    let encoded = try encode(
+      image,
+      as: AVIFInspector.typeIdentifier,
+      options: [kCGImageDestinationLossyCompressionQuality: quality.compressionValue]
+        as CFDictionary
+    )
+    return (encoded, (image.width, image.height))
+  }
+
   public func verifyCanonicalPNG(at url: URL) throws -> PNGInspection {
     let data = try mappedInputData(at: url.standardizedFileURL)
     let inspection = try PNGInspector.verifyCanonical(data)
@@ -202,26 +250,15 @@ public final class ImageSanitizer: Sendable {
     quality: AVIFQuality
   ) throws -> SanitizationReport {
     try validateInputByteCount(sourceData.count)
-    guard
-      let source = CGImageSourceCreateWithData(
-        sourceData as CFData,
-        [kCGImageSourceShouldCache: false] as CFDictionary)
-    else {
-      throw MetaShieldError.unsupportedOrCorruptImage
+    let encoded: Data
+    let size: (width: Int, height: Int)
+    if let isolatedEncoder {
+      (encoded, size) = try isolatedEncoder.encodedSanitizedAVIF(from: sourceData, quality: quality)
+    } else {
+      (encoded, size) = try encodedSanitizedAVIF(from: sourceData, quality: quality)
     }
-    guard AVIFInspector.isEncodingAvailable else {
-      throw MetaShieldError.avifEncodingUnavailable
-    }
-    let cleanImage = try makeSanitizedImage(from: source)
-    let encoded = try encode(
-      cleanImage,
-      as: AVIFInspector.typeIdentifier,
-      options: [
-        kCGImageDestinationLossyCompressionQuality: quality.compressionValue
-      ] as CFDictionary
-    )
     let inspection = try AVIFInspector.verify(
-      encoded, expectedWidth: cleanImage.width, expectedHeight: cleanImage.height)
+      encoded, expectedWidth: size.width, expectedHeight: size.height)
     try writeVerifiedAVIF(
       encoded, width: inspection.width, height: inspection.height, to: outputURL)
     return SanitizationReport(
