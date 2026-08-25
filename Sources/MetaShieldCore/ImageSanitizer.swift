@@ -1200,8 +1200,19 @@ public final class ImageSanitizer: Sendable {
 
     let chunkByteCount = 1 * 1_024 * 1_024
     var buffer = [UInt8](repeating: 0, count: min(chunkByteCount, max(1, expected.count)))
-    let matches = expected.withUnsafeBytes { source -> Bool in
-      guard let sourceBase = source.baseAddress else { return expected.isEmpty }
+    // A read that fails is not the same as a file whose contents differ. Keeping
+    // them apart matters here: one says the disk or filesystem is misbehaving,
+    // the other says something rewrote the file, and a user deciding whether to
+    // trust the result needs to be told which.
+    enum ComparisonOutcome {
+      case equal
+      case different
+      case unreadable(String)
+    }
+    let outcome = expected.withUnsafeBytes { source -> ComparisonOutcome in
+      guard let sourceBase = source.baseAddress else {
+        return expected.isEmpty ? .equal : .different
+      }
       var offset = 0
       while offset < expected.count {
         let requested = min(buffer.count, expected.count - offset)
@@ -1215,20 +1226,29 @@ public final class ImageSanitizer: Sendable {
               requested - filled,
               off_t(offset + filled))
           }
-          if bytesRead < 0, errno == EINTR { continue }
-          guard bytesRead > 0 else { return false }
+          if bytesRead < 0 {
+            if errno == EINTR { continue }
+            return .unreadable(String(cString: strerror(errno)))
+          }
+          // A short read before the expected length means the file shrank.
+          guard bytesRead > 0 else { return .different }
           filled += bytesRead
         }
         let equal = buffer.withUnsafeBytes { destination in
           memcmp(sourceBase.advanced(by: offset), destination.baseAddress, requested) == 0
         }
-        guard equal else { return false }
+        guard equal else { return .different }
         offset += requested
       }
-      return true
+      return .equal
     }
-    guard matches else {
+    switch outcome {
+    case .equal:
+      break
+    case .different:
       throw MetaShieldError.verificationFailed("저장 전후 내용이 달라졌습니다.")
+    case .unreadable(let reason):
+      throw MetaShieldError.fileOperationFailed("저장한 파일을 다시 읽지 못했습니다: \(reason)")
     }
 
     // Catch a concurrent truncate or append that happened after the first

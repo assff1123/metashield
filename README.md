@@ -75,7 +75,15 @@ For a successfully processed PNG, MetaShield guarantees that the output:
   output. An alpha-LSB payload therefore leaves no residue in the output RGB either.
   Alpha differences large enough to cross a bucket boundary are visible transparency
   changes and fall under the visible-pixel boundary below;
-- contains only `IHDR`, `IDAT`, and `IEND` chunks with valid CRCs;
+- contains only `IHDR`, `IDAT`, and `IEND` chunks with valid CRCs, and an `IDAT`
+  whose zlib stream decodes to exactly one scanline per row with no trailing or
+  concatenated data. **In the shipped app that pixel-stream check runs in the
+  isolated decoder, not in the app.** The app repeats only the container checks,
+  because inflating attacker-influenced bytes in the unsandboxed process is the
+  thing the isolation exists to avoid. A compromised decoder could therefore
+  return a container the app accepts and writes; it cannot re-enter the app, but
+  this specific guarantee is enforced on the sandboxed side. The command-line
+  tool built standalone performs the full check in process;
 - contains none of the source file's extended attributes;
 - contains one complete zlib stream with exactly the expected number of RGB
   scanline bytes and a valid PNG filter byte on every row.
