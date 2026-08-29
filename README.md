@@ -169,17 +169,22 @@ touches the network. MetaShield installs no background agent.
 
 ## Input behavior
 
-- Local PNG: canonicalized and atomically replaced after verification, without an
-  extra confirmation dialog. Transparency is composited onto white; Finder tags,
-  comments, quarantine/custom extended attributes, and source color profiles are
-  not retained. File timestamps can change. Back up anything that must be reversible.
-- Other still-image formats: exported beside the source as a new canonical
-  `.clean.png`, after which the source is moved to the Trash. Leaving it would
-  defeat the point: the original still carries the metadata that was just
-  removed, sitting next to a file the user believes is clean. The move is only
-  made after the copy has been written and verified, only when the copy landed
-  in the same folder, and never for a Photos-managed original. It goes to the
-  Trash rather than being deleted, so it is recoverable.
+- Any accepted image: a verified clean PNG is written and the original is moved
+  to the Trash. The result inherits the original's name (with a `.png`
+  extension) and its owner, group, mode, and ACL, so references and access rules
+  survive. Transparency is composited onto white; Finder tags, comments,
+  quarantine/custom extended attributes, and source color profiles are not
+  retained, and timestamps can change.
+
+  **The original survives in the Trash until it is emptied.** Earlier releases
+  overwrote a PNG in place, which left nothing behind but could not be undone —
+  a mis-click on the wrong file was final. Recoverability was judged the more
+  important property, so the metadata-bearing source now lingers where the user
+  can restore it. Empty the Trash to complete the removal.
+  The original is retired only after the replacement has been written and
+  verified on disk, and never for a Photos-managed original. If placing the
+  replacement fails after that point, the error names where the clean file is
+  rather than deleting the only good copy.
 - Photos, browsers, and other apps: file promises, file URLs, PNG, and TIFF pasteboard
   data are accepted when the source app provides them. Managed Photos originals are
   not overwritten; a clean PNG copy is saved instead.

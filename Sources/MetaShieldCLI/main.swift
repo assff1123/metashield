@@ -128,7 +128,7 @@ for path in paths {
       let report = try sanitizer.writeCanonicalPNG(from: url, to: destination)
       print("완료: \(path) → \(report.url.path) — \(report.width)×\(report.height)")
     } else {
-      let report = try sanitizer.sanitizePNGInPlace(at: url)
+      let report = try sanitizer.replaceWithCleanPNG(at: url)
       print(
         "완료: \(path) — \(report.width)×\(report.height), \(report.originalByteCount) → \(report.sanitizedByteCount) bytes"
       )

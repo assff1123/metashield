@@ -14,8 +14,8 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
   private let titleLabel = NSTextField(labelWithString: "이미지의 숨은 정보를 남김없이 비웁니다")
   private let subtitleLabel = NSTextField(
     wrappingLabelWithString:
-      "PNG는 검증 후 원본을 영구 교체합니다. 다른 형식은 정리된 PNG를 만든 뒤 원본을 휴지통으로 "
-      + "옮깁니다. 투명도는 흰색으로 합성합니다. Finder 우클릭의 AVIF 변환은 원본을 그대로 둡니다.")
+      "정리된 PNG가 원본의 이름과 접근 권한을 물려받고, 원본은 휴지통으로 갑니다. 투명도는 "
+      + "흰색으로 합성합니다. Finder 우클릭의 AVIF 변환은 원본을 그대로 두는 항목도 있습니다.")
   private let dropZone = DropZoneView()
   private let statusLabel = NSTextField(wrappingLabelWithString: "이미지를 이곳에 놓거나 아래 버튼으로 선택하세요.")
   private let chooseButton = NSButton(title: "이미지 선택…", target: nil, action: nil)
@@ -478,15 +478,16 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
       return
     }
 
+    // Photos owns its managed originals, so those are imported as new assets
+    // rather than replaced. Everything else takes one path regardless of format:
+    // splitting by extension is what used to make a JPEG behave unlike a PNG.
     let managedFiles = files.filter { ImageInputLocationPolicy.shouldImportIntoPhotos($0) }
     let managedSet = Set(managedFiles)
-    let pngFiles = files.filter {
-      $0.pathExtension.lowercased() == "png"
-        && !managedSet.contains($0)
-        && ImageInputLocationPolicy.canReplaceInPlace($0)
+    let replaceableFiles = files.filter {
+      !managedSet.contains($0) && ImageInputLocationPolicy.canReplaceInPlace($0)
     }
-    let pngSet = Set(pngFiles)
-    let copyFiles = files.filter { !managedSet.contains($0) && !pngSet.contains($0) }
+    let replaceableSet = Set(replaceableFiles)
+    let copyFiles = files.filter { !managedSet.contains($0) && !replaceableSet.contains($0) }
 
     var managedOutputDirectory: URL?
     if !managedFiles.isEmpty {
@@ -519,7 +520,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
 
       if case .convertToAVIF(let quality, _) = operation {
         // Conversion never replaces a source: every input becomes a new file.
-        for url in pngFiles + copyFiles {
+        for url in replaceableFiles + copyFiles {
           do {
             let destinationDirectory = try Self.automaticOutputDirectory(for: url)
             let destination = OutputNaming.uniqueCleanAVIFURL(
@@ -539,9 +540,9 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
           }
         }
       } else {
-        for url in pngFiles {
+        for url in replaceableFiles {
           do {
-            let report = try sanitizer.sanitizePNGInPlace(at: url)
+            let report = try sanitizer.replaceWithCleanPNG(at: url)
             successes.append(report.url)
           } catch MetaShieldError.inPlaceReplacementUnavailable {
             // Replacing this original could not be made crash-safe. Leave it

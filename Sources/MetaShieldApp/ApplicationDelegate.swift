@@ -87,8 +87,26 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate,
   func application(_ sender: NSApplication, openFiles filenames: [String]) {
     hasExternalOpenRequest = true
     let urls = filenames.map { URL(fileURLWithPath: $0) }
-    // A plain file-open (Dock drag, Open With) is always the scrub command.
-    externalRequests.append(.files(urls, operation: .scrubInPlace))
+
+    // Unlike a Services click, this path carries no command: Photos' "Edit
+    // With", a Dock drop, and "Open With" only say which app and which files.
+    // Ask rather than guess, with the scrub command as the default button so
+    // Return still finishes it in one step.
+    NSApp.setActivationPolicy(.regular)
+    NSApp.activate(ignoringOtherApps: true)
+    guard let operation = OperationChooser.chooseOperation(for: urls) else {
+      if !interactiveWindowShown { NSApp.setActivationPolicy(.accessory) }
+      sender.reply(toOpenOrPrint: .cancel)
+      // Nothing was asked for, so nothing is pending; a headless launch must
+      // still not linger.
+      if !interactiveWindowShown, externalRequests.isEmpty, !isDeliveringExternalRequest {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { NSApp.terminate(nil) }
+      }
+      return
+    }
+    if !interactiveWindowShown { NSApp.setActivationPolicy(.accessory) }
+
+    externalRequests.append(.files(urls, operation: operation))
     deliverNextExternalRequestIfNeeded()
     sender.reply(toOpenOrPrint: .success)
   }

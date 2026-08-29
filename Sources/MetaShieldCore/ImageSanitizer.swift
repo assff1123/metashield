@@ -28,16 +28,26 @@ public final class ImageSanitizer: Sendable {
   /// full privileges. File handling and verification stay here either way.
   private let isolatedEncoder: CanonicalImageEncoding?
 
+  /// How an original is retired once a verified replacement exists.
+  ///
+  /// Injectable so the self tests can retire into a directory they own instead
+  /// of filling the developer's Trash on every run — the shipped behaviour is
+  /// still the default.
+  private let retireOriginal: @Sendable (URL) throws -> Void
+
   public init(
     maximumPixelCount: Int = 40_000_000,
     maximumInputByteCount: Int = 256 * 1_024 * 1_024,
-    isolatedEncoder: CanonicalImageEncoding? = nil
+    isolatedEncoder: CanonicalImageEncoding? = nil,
+    retireOriginal: (@Sendable (URL) throws -> Void)? = nil
   ) {
     precondition(maximumPixelCount > 0)
     precondition(maximumInputByteCount > 0)
     self.maximumPixelCount = maximumPixelCount
     self.maximumInputByteCount = maximumInputByteCount
     self.isolatedEncoder = isolatedEncoder
+    self.retireOriginal =
+      retireOriginal ?? { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
   }
 
   public func makeCanonicalPNG(from sourceData: Data) throws -> Data {
@@ -72,45 +82,63 @@ public final class ImageSanitizer: Sendable {
     return inspection
   }
 
-  public func sanitizePNGInPlace(at url: URL) throws -> SanitizationReport {
+  /// Writes a verified clean PNG for `url` and moves the original to the Trash.
+  ///
+  /// Every accepted format takes this path, so the command behaves the same way
+  /// whatever the user selected. Earlier releases overwrote a PNG in place,
+  /// which left nothing behind but also could not be undone: one mis-click on
+  /// the wrong file was final. Retiring the original to the Trash makes the
+  /// command recoverable, at the cost of the source surviving there until the
+  /// Trash is emptied — a trade documented in `README.md`.
+  ///
+  /// The result inherits the original's name (with a `.png` extension) and its
+  /// owner, group, mode, and ACL, so a scrubbed file keeps its identity and its
+  /// access rules rather than reappearing as a differently named 0644 file.
+  public func replaceWithCleanPNG(at url: URL) throws -> SanitizationReport {
     let standardizedURL = url.standardizedFileURL
     let originalFileState = try inPlaceFileState(at: standardizedURL)
-    guard standardizedURL.pathExtension.lowercased() == "png" else {
-      throw MetaShieldError.unsupportedInPlaceFormat(standardizedURL.pathExtension.lowercased())
-    }
-
-    guard originalFileState.size >= 0,
-      UInt64(originalFileState.size) <= UInt64(Int.max)
-    else {
+    guard originalFileState.size >= 0, UInt64(originalFileState.size) <= UInt64(Int.max) else {
       throw MetaShieldError.inputFileTooLarge(byteCount: Int.max, limit: maximumInputByteCount)
     }
     let originalSize = Int(originalFileState.size)
     try validateInputByteCount(originalSize)
+
     let fileResult = try canonicalPNGFileResult(from: standardizedURL)
     let canonical = fileResult.data
     let inspection = fileResult.inspection
 
+    let directory = standardizedURL.deletingLastPathComponent()
+    let baseName = standardizedURL.deletingPathExtension().lastPathComponent
+    let preferredDestination = directory.appendingPathComponent("\(baseName).png")
+    // The preferred name is free either because it *is* the original (which is
+    // about to be retired) or because nothing else holds it.
+    let destination =
+      preferredDestination.standardizedFileURL == standardizedURL
+        || !FileManager.default.fileExists(atPath: preferredDestination.path)
+      ? preferredDestination
+      : OutputNaming.uniqueCleanPNGURL(in: directory, baseName: baseName)
+
     let staged = try stageReplacement(besideOriginalAt: standardizedURL, pathExtension: "png")
     let tempURL = staged.url
+    var originalRetired = false
 
     do {
       try writeTemporaryDataSecurely(canonical, to: tempURL, permissions: 0o600)
       try synchronizeFile(at: tempURL)
-      // `canonical` was already validated. Compare the persisted inode in
-      // bounded chunks instead of mapping and faulting a second output-sized
-      // buffer into the host process (up to another 256 MiB).
       try verifyFileContents(at: tempURL, equalTo: canonical)
       try verifyUnchanged(originalFileState, at: standardizedURL)
       try applySecurityAttributes(
-        from: standardizedURL,
-        originalState: originalFileState,
-        to: tempURL
-      )
+        from: standardizedURL, originalState: originalFileState, to: tempURL)
       try verifyUnchanged(originalFileState, at: standardizedURL)
-      try commitReplacement(staged, destination: standardizedURL)
+
+      // Retire the original only once a verified replacement exists on disk.
+      try retireOriginal(standardizedURL)
+      originalRetired = true
+
+      try commitReplacement(staged, destination: destination)
 
       return SanitizationReport(
-        url: standardizedURL,
+        url: destination,
         width: inspection.width,
         height: inspection.height,
         originalByteCount: originalSize,
@@ -118,11 +146,19 @@ public final class ImageSanitizer: Sendable {
         chunkTypes: inspection.chunkTypes
       )
     } catch {
-      try? FileManager.default.removeItem(at: tempURL)
-      if let stagingDirectory = staged.stagingDirectory {
-        try? FileManager.default.removeItem(at: stagingDirectory)
+      // Before the original is retired, clean up and leave the source alone.
+      // After it, the staged file is the only clean copy — keep it and say
+      // where it is rather than deleting the user's only result.
+      if !originalRetired {
+        try? FileManager.default.removeItem(at: tempURL)
+        if let stagingDirectory = staged.stagingDirectory {
+          try? FileManager.default.removeItem(at: stagingDirectory)
+        }
+        throw error
       }
-      throw error
+      throw MetaShieldError.fileOperationFailed(
+        "원본은 휴지통으로 옮겼지만 정리본을 제자리에 두지 못했습니다. 정리본 위치: "
+          + tempURL.path + " (원인: " + error.localizedDescription + ")")
     }
   }
 
