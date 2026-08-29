@@ -9,11 +9,25 @@ import MetaShieldCore
 /// write a new file beside the source.
 enum SanitizeOperation: Sendable {
   case scrubInPlace
-  case convertToAVIF(AVIFQuality)
+  /// `retiresOriginal` is part of the command the user picked, not a setting.
+  /// Conversion is lossy and AVIF is not readable everywhere, so retiring the
+  /// source is a separate, explicitly named menu item rather than a mode the
+  /// existing one can silently acquire.
+  case convertToAVIF(AVIFQuality, retiresOriginal: Bool)
 
   var isConversion: Bool {
     if case .convertToAVIF = self { return true }
     return false
+  }
+
+  /// Whether a successful result means the source has served its purpose.
+  var retiresOriginal: Bool {
+    switch self {
+    case .scrubInPlace:
+      return true
+    case .convertToAVIF(_, let retires):
+      return retires
+    }
   }
 
   var progressDescription: String {

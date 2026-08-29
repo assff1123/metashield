@@ -34,9 +34,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.5.4</string>
+	<string>0.6.0</string>
 	<key>CFBundleVersion</key>
-	<string>28</string>
+	<string>29</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
@@ -55,7 +55,7 @@
 			<key>NSMenuItem</key>
 			<dict>
 				<key>default</key>
-				<string>메타데이터 완전 제거 및 덮어쓰기</string>
+				<string>메타데이터 완전 제거 (원본 대체)</string>
 			</dict>
 			<key>NSMessage</key>
 			<string>sanitizeSelection</string>
@@ -75,7 +75,7 @@
 				<string>public.png</string>
 			</array>
 			<key>NSServiceDescription</key>
-			<string>선택한 이미지에서 컨테이너 메타데이터와 알파 채널 기반 은닉 데이터를 제거합니다.</string>
+			<string>컨테이너 메타데이터와 알파 채널 기반 은닉 데이터를 제거합니다. PNG는 원본을 교체하고, 다른 형식은 같은 폴더에 정리된 PNG를 만든 뒤 원본을 휴지통으로 옮깁니다.</string>
 		</dict>
 		<dict>
 			<key>NSMenuItem</key>
@@ -128,6 +128,58 @@
 			</array>
 			<key>NSServiceDescription</key>
 			<string>메타데이터를 제거하고 앱에서 설정한 압축률로 AVIF 사본을 원본 옆에 만듭니다. 원본은 그대로 둡니다.</string>
+		</dict>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>AVIF로 변환 후 원본 휴지통으로</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>convertToAVIFReplacing</string>
+			<key>NSPortName</key>
+			<string>MetaShield</string>
+			<key>NSRequiredContext</key>
+			<dict/>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.image</string>
+			</array>
+			<key>NSSendTypes</key>
+			<array>
+				<string>NSFilenamesPboardType</string>
+				<string>public.file-url</string>
+				<string>NSPasteboardTypeTIFF</string>
+				<string>public.png</string>
+			</array>
+			<key>NSServiceDescription</key>
+			<string>메타데이터를 제거하고 거의 손실 없는 AVIF 사본을 만든 뒤 원본을 휴지통으로 옮깁니다. AVIF는 손실 압축이며 구형 환경에서 표시되지 않을 수 있으니, 원본이 필요하면 이 메뉴를 쓰지 마세요.</string>
+		</dict>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>AVIF로 변환·압축 후 원본 휴지통으로</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>convertToAVIFCompressedReplacing</string>
+			<key>NSPortName</key>
+			<string>MetaShield</string>
+			<key>NSRequiredContext</key>
+			<dict/>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.image</string>
+			</array>
+			<key>NSSendTypes</key>
+			<array>
+				<string>NSFilenamesPboardType</string>
+				<string>public.file-url</string>
+				<string>NSPasteboardTypeTIFF</string>
+				<string>public.png</string>
+			</array>
+			<key>NSServiceDescription</key>
+			<string>메타데이터를 제거하고 설정한 압축률로 AVIF 사본을 만든 뒤 원본을 휴지통으로 옮깁니다. 압축률이 낮을수록 화질 손실이 커지므로 원본이 필요하면 이 메뉴를 쓰지 마세요.</string>
 		</dict>
 	</array>
 	<key>UTExportedTypeDeclarations</key>

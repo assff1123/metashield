@@ -99,9 +99,12 @@ MetaShield can also write an AVIF copy, for cases where file size matters more
 than a byte-level structural guarantee. This is a *different* promise and is
 stated separately on purpose:
 
-- AVIF conversion never replaces a source file. It always writes a new file
-  beside the original, so the one irreversible operation in MetaShield remains
-  the explicitly named in-place PNG command.
+- AVIF conversion never overwrites a source file; it always writes a new file
+  beside the original. Two additional menu items also move the source to the
+  Trash afterwards, and they say so in their names. Retiring the source is not a
+  setting the plain conversion commands can silently acquire, because AVIF is
+  lossy and not readable everywhere: the choice belongs in the command the user
+  picks, and both variants are off until the user enables them.
 - AVIF is always lossy. Apple's encoder has no lossless mode, and a requested
   quality of 1.0 makes it fail outright, so the usable range stops below that.
   Pixels are re-encoded and will not match the source exactly.
@@ -170,8 +173,13 @@ touches the network. MetaShield installs no background agent.
   extra confirmation dialog. Transparency is composited onto white; Finder tags,
   comments, quarantine/custom extended attributes, and source color profiles are
   not retained. File timestamps can change. Back up anything that must be reversible.
-- Other still-image formats: automatically exported beside the source as a new
-  canonical `.clean.png`; source retained and no folder chooser is shown.
+- Other still-image formats: exported beside the source as a new canonical
+  `.clean.png`, after which the source is moved to the Trash. Leaving it would
+  defeat the point: the original still carries the metadata that was just
+  removed, sitting next to a file the user believes is clean. The move is only
+  made after the copy has been written and verified, only when the copy landed
+  in the same folder, and never for a Photos-managed original. It goes to the
+  Trash rather than being deleted, so it is recoverable.
 - Photos, browsers, and other apps: file promises, file URLs, PNG, and TIFF pasteboard
   data are accepted when the source app provides them. Managed Photos originals are
   not overwritten; a clean PNG copy is saved instead.

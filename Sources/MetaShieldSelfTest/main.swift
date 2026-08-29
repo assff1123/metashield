@@ -1463,6 +1463,39 @@ private func testVerificationAcceptsOnlyCleanResults() throws {
   }
 }
 
+private func testOriginalDisposalOnlyRetiresWhatItShould() throws {
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let source = directory.appendingPathComponent("photo.jpg")
+  let besideCopy = directory.appendingPathComponent("photo.clean.png")
+
+  // The normal case: a verified copy sits next to the source.
+  try expect(
+    OriginalDisposal.decide(source: source, sanitizedCopy: besideCopy) == .moveToTrash,
+    "원본 옆에 사본이 생겼는데 원본을 그대로 두었습니다.")
+
+  // A copy that landed elsewhere (read-only folder falls back to Downloads)
+  // must never take the source with it: the user would be left staring at an
+  // empty folder.
+  let elsewhere = directory.appendingPathComponent("sub", isDirectory: true)
+    .appendingPathComponent("photo.clean.png")
+  guard case .keep = OriginalDisposal.decide(source: source, sanitizedCopy: elsewhere) else {
+    throw SelfTestError.assertion("다른 폴더에 저장됐는데 원본을 휴지통으로 보내려 했습니다.")
+  }
+
+  // An in-place replacement has no separate source to retire.
+  guard case .keep = OriginalDisposal.decide(source: source, sanitizedCopy: source) else {
+    throw SelfTestError.assertion("원본 자체를 다시 휴지통으로 보내려 했습니다.")
+  }
+
+  // Photos owns its managed originals; they are not ours to retire.
+  let managed = URL(fileURLWithPath: "/private/var/folders/ab/managed/photo.jpg")
+  let managedCopy = URL(fileURLWithPath: "/private/var/folders/ab/managed/photo.clean.png")
+  guard case .keep = OriginalDisposal.decide(source: managed, sanitizedCopy: managedCopy) else {
+    throw SelfTestError.assertion("사진 보관함 관리 원본을 휴지통으로 보내려 했습니다.")
+  }
+}
+
 let tests: [(String, () throws -> Void)] = [
   ("PNG 메타데이터·알파·xattr 제거", testAggressiveSanitization),
   ("알파 하위 비트 은닉 payload 제거", testAlphaLowBitPayloadIsDestroyed),
@@ -1499,6 +1532,7 @@ let tests: [(String, () throws -> Void)] = [
   ("쓰기 불가 폴더에서 원본 불변", testReadOnlyDirectoryNeverDamagesOriginal),
   ("XPC 요청 값 왕복 보존", testServiceRejectsHostileRequestValues),
   ("검증이 깨끗한 결과만 통과", testVerificationAcceptsOnlyCleanResults),
+  ("원본 휴지통 이동 판단", testOriginalDisposalOnlyRetiresWhatItShould),
 ]
 
 do {
