@@ -100,6 +100,11 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     updateStatusLabel.textColor = .secondaryLabelColor
     updateStatusLabel.alignment = .center
     updateStatusLabel.setAccessibilityLabel("업데이트 확인 상태")
+    // "새 버전이 나왔습니다" reads like something to click, so make it one. The
+    // address is the compiled-in release page, the same one the button opens;
+    // nothing from the network can redirect it.
+    updateStatusLabel.addGestureRecognizer(
+      NSClickGestureRecognizer(target: self, action: #selector(openReleasePage)))
 
     downloadUpdateButton.target = self
     downloadUpdateButton.action = #selector(downloadVerifiedUpdate)
@@ -369,6 +374,29 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     }
   }
 
+  /// Makes the status line look and behave like the link it now is, and stops
+  /// it pretending to be one when there is nowhere useful to go.
+  private func setUpdateStatus(_ text: String, color: NSColor, actionable: Bool) {
+    if actionable {
+      updateStatusLabel.attributedStringValue = NSAttributedString(
+        string: text,
+        attributes: [
+          .foregroundColor: color,
+          .font: NSFont.preferredFont(forTextStyle: .callout),
+          .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ]
+      )
+      updateStatusLabel.setAccessibilityHelp("눌러서 릴리스 페이지를 엽니다.")
+    } else {
+      updateStatusLabel.stringValue = text
+      updateStatusLabel.textColor = color
+      updateStatusLabel.setAccessibilityHelp(nil)
+    }
+    updateStatusLabel.isEnabled = true
+    NSAccessibility.post(element: updateStatusLabel, notification: .valueChanged)
+    announce(text)
+  }
+
   @objc private func openReleasePage() {
     // The release page is compiled in. Nothing from the network can change it.
     NSWorkspace.shared.open(UpdateChecker.releasePageURL)
@@ -395,37 +423,36 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     guard downloadedUpdate == nil else { return }
     switch outcome {
     case .updateAvailable(let latest):
-      updateStatusLabel.stringValue = "새 버전 \(latest)이(가) 나왔습니다."
-      updateStatusLabel.textColor = .controlAccentColor
+      setUpdateStatus(
+        "새 버전 \(latest)이(가) 나왔습니다. 릴리스 페이지 열기",
+        color: .controlAccentColor,
+        actionable: true)
       pendingUpdate = latest
       downloadedUpdate = nil
       downloadUpdateButton.title = "검증된 DMG 받기…"
       downloadUpdateButton.isHidden = false
       openReleaseButton.isHidden = false
     case .upToDate(let current):
-      updateStatusLabel.stringValue = "최신 버전입니다 (\(current))."
-      updateStatusLabel.textColor = .secondaryLabelColor
+      setUpdateStatus("최신 버전입니다 (\(current)).", color: .secondaryLabelColor, actionable: false)
       pendingUpdate = nil
       downloadUpdateButton.isHidden = true
       openReleaseButton.isHidden = true
     case .regressionSuspected(let highestSeen, let reported):
       // Never offer a download here. This is what hiding a security fix would
       // look like from the app's side, so say so and let the user check.
-      updateStatusLabel.stringValue =
+      setUpdateStatus(
         "주의: 이전에 \(highestSeen) 버전을 확인했는데 지금은 \(reported)이(가) 최신이라고 합니다. "
-        + "릴리스 페이지에서 직접 확인하세요."
-      updateStatusLabel.textColor = .systemRed
+          + "눌러서 릴리스 페이지에서 직접 확인하세요.",
+        color: .systemRed,
+        actionable: true)
       pendingUpdate = nil
       downloadUpdateButton.isHidden = true
       openReleaseButton.isHidden = false
     case .failed:
-      updateStatusLabel.stringValue = "새 버전을 확인하지 못했습니다."
-      updateStatusLabel.textColor = .secondaryLabelColor
+      setUpdateStatus("새 버전을 확인하지 못했습니다.", color: .secondaryLabelColor, actionable: false)
       downloadUpdateButton.isHidden = true
       openReleaseButton.isHidden = true
     }
-    NSAccessibility.post(element: updateStatusLabel, notification: .valueChanged)
-    announce(updateStatusLabel.stringValue)
   }
 
   func receiveFileURLs(
