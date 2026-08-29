@@ -23,6 +23,8 @@ enum ServiceMenuSetup {
   private static let hiddenByDefaultServices: [(title: String, message: String)] = [
     ("AVIF로 변환 (메타데이터 제거)", "convertToAVIF"),
     ("AVIF로 변환 및 압축 (메타데이터 제거)", "convertToAVIFCompressed"),
+    ("AVIF로 변환 후 원본 휴지통으로", "convertToAVIFReplacing"),
+    ("AVIF로 변환·압축 후 원본 휴지통으로", "convertToAVIFCompressedReplacing"),
   ]
 
   /// Starts a fresh install with only the metadata-scrubbing command in the

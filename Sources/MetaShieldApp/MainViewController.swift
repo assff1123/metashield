@@ -14,8 +14,8 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
   private let titleLabel = NSTextField(labelWithString: "이미지의 숨은 정보를 남김없이 비웁니다")
   private let subtitleLabel = NSTextField(
     wrappingLabelWithString:
-      "PNG는 검증 후 원본을 영구 교체하며 투명도는 흰색으로 합성합니다. 다른 형식과 사진 앱·브라우저 이미지는 "
-      + "깨끗한 RGB PNG 사본으로 저장합니다. Finder 우클릭에서 AVIF 변환도 선택할 수 있습니다(원본 유지).")
+      "PNG는 검증 후 원본을 영구 교체합니다. 다른 형식은 정리된 PNG를 만든 뒤 원본을 휴지통으로 "
+      + "옮깁니다. 투명도는 흰색으로 합성합니다. Finder 우클릭의 AVIF 변환은 원본을 그대로 둡니다.")
   private let dropZone = DropZoneView()
   private let statusLabel = NSTextField(wrappingLabelWithString: "이미지를 이곳에 놓거나 아래 버튼으로 선택하세요.")
   private let chooseButton = NSButton(title: "이미지 선택…", target: nil, action: nil)
@@ -517,7 +517,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
       var photosOutputs: [URL] = []
       let sanitizer = SanitizerFactory.makeSanitizer()
 
-      if case .convertToAVIF(let quality) = operation {
+      if case .convertToAVIF(let quality, _) = operation {
         // Conversion never replaces a source: every input becomes a new file.
         for url in pngFiles + copyFiles {
           do {
@@ -529,6 +529,11 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
             let report = try sanitizer.writeCanonicalAVIF(
               from: url, to: destination, quality: quality)
             successes.append(report.url)
+            if let failure = Self.retireOriginalIfRequested(
+              operation, source: url, sanitizedCopy: report.url)
+            {
+              failures.append(failure)
+            }
           } catch {
             failures.append(ProcessingFailure(url: url, error: error))
           }
@@ -566,6 +571,11 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
             )
             let report = try sanitizer.writeCanonicalPNG(from: url, to: destination)
             successes.append(report.url)
+            if let failure = Self.retireOriginalIfRequested(
+              operation, source: url, sanitizedCopy: report.url)
+            {
+              failures.append(failure)
+            }
           } catch {
             failures.append(ProcessingFailure(url: url, error: error))
           }
@@ -577,7 +587,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
           do {
             let baseName = url.deletingPathExtension().lastPathComponent
             let report: SanitizationReport
-            if case .convertToAVIF(let quality) = operation {
+            if case .convertToAVIF(let quality, _) = operation {
               report = try sanitizer.writeCanonicalAVIF(
                 from: url,
                 to: OutputNaming.uniqueCleanAVIFURL(in: importDirectory, baseName: baseName),
@@ -652,7 +662,7 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
       do {
         let sanitizer = SanitizerFactory.makeSanitizer()
         let report: SanitizationReport
-        if case .convertToAVIF(let quality) = operation {
+        if case .convertToAVIF(let quality, _) = operation {
           report = try sanitizer.writeCanonicalAVIF(
             from: data, to: destination, quality: quality)
         } else {
@@ -1044,6 +1054,29 @@ final class MainViewController: NSViewController, NSSharingServiceDelegate,
     showStatus(message, isError: true)
     if !silently {
       NSSound.beep()
+    }
+  }
+
+  /// Retires a source whose verified copy has been written, when the command
+  /// the user picked asks for that. Failing to retire it is not a failed
+  /// sanitization — the clean copy exists either way — but the user is told,
+  /// because they would otherwise believe the original is gone.
+  nonisolated private static func retireOriginalIfRequested(
+    _ operation: SanitizeOperation,
+    source: URL,
+    sanitizedCopy: URL
+  ) -> ProcessingFailure? {
+    guard operation.retiresOriginal,
+      case .moveToTrash = OriginalDisposal.decide(source: source, sanitizedCopy: sanitizedCopy)
+    else { return nil }
+    do {
+      try FileManager.default.trashItem(at: source, resultingItemURL: nil)
+      return nil
+    } catch {
+      return ProcessingFailure(
+        url: source,
+        error: MetaShieldError.fileOperationFailed(
+          "정리본은 만들었지만 원본을 휴지통으로 옮기지 못했습니다: " + error.localizedDescription))
     }
   }
 

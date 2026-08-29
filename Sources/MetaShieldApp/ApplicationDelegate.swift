@@ -227,7 +227,7 @@ private final class ImageServiceProvider: NSObject {
     userData: String?,
     error: AutoreleasingUnsafeMutablePointer<NSString?>
   ) {
-    deliver(pasteboard, operation: .convertToAVIF(.high), error: error)
+    deliver(pasteboard, operation: .convertToAVIF(.high, retiresOriginal: false), error: error)
   }
 
   @objc func convertToAVIFCompressed(
@@ -235,7 +235,29 @@ private final class ImageServiceProvider: NSObject {
     userData: String?,
     error: AutoreleasingUnsafeMutablePointer<NSString?>
   ) {
-    deliver(pasteboard, operation: .convertToAVIF(AVIFSettings.compressedQuality), error: error)
+    deliver(
+      pasteboard,
+      operation: .convertToAVIF(AVIFSettings.compressedQuality, retiresOriginal: false),
+      error: error)
+  }
+
+  @objc func convertToAVIFReplacing(
+    _ pasteboard: NSPasteboard,
+    userData: String?,
+    error: AutoreleasingUnsafeMutablePointer<NSString?>
+  ) {
+    deliver(pasteboard, operation: .convertToAVIF(.high, retiresOriginal: true), error: error)
+  }
+
+  @objc func convertToAVIFCompressedReplacing(
+    _ pasteboard: NSPasteboard,
+    userData: String?,
+    error: AutoreleasingUnsafeMutablePointer<NSString?>
+  ) {
+    deliver(
+      pasteboard,
+      operation: .convertToAVIF(AVIFSettings.compressedQuality, retiresOriginal: true),
+      error: error)
   }
 
   private func deliver(
