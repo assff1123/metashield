@@ -18,6 +18,16 @@ private func expect(_ condition: @autoclosure () throws -> Bool, _ message: Stri
   guard try condition() else { throw SelfTestError.assertion(message) }
 }
 
+/// Retires originals into a directory the test owns, so a self-test run never
+/// fills the developer's Trash. The shipped default is the real Trash.
+private func makeTestSanitizer(retiredInto directory: URL) -> ImageSanitizer {
+  ImageSanitizer(retireOriginal: { url in
+    let destination = directory.appendingPathComponent(
+      "retired-\(UUID().uuidString)-\(url.lastPathComponent)")
+    try FileManager.default.moveItem(at: url, to: destination)
+  })
+}
+
 private func makeTemporaryDirectory() throws -> URL {
   let directory = FileManager.default.temporaryDirectory
     .appendingPathComponent("MetaShieldTests-\(UUID().uuidString)", isDirectory: true)
@@ -317,7 +327,7 @@ private func testAggressiveSanitization() throws {
   )
   try expect(setScreenshotXattr.0 == 0, "스크린샷 메타데이터 xattr를 설정하지 못했습니다.")
 
-  _ = try ImageSanitizer().sanitizePNGInPlace(at: file)
+  _ = try makeTestSanitizer(retiredInto: directory).replaceWithCleanPNG(at: file)
   let cleaned = try Data(contentsOf: file)
   let after = try PNGInspector.verifyCanonical(cleaned)
   try expect(after.colorType == 2 && after.bitDepth == 8, "결과가 8-bit RGB가 아닙니다.")
@@ -419,7 +429,7 @@ private func testAlphaLowBitPayloadIsDestroyed() throws {
     ].enumerated().map { index, data -> Data in
       let file = directory.appendingPathComponent("\(name)-\(index).png")
       try data.write(to: file)
-      _ = try ImageSanitizer().sanitizePNGInPlace(at: file)
+      _ = try makeTestSanitizer(retiredInto: directory).replaceWithCleanPNG(at: file)
       return try Data(contentsOf: file)
     }
 
@@ -562,7 +572,7 @@ private func testFilePermissionsArePreserved() throws {
   )
   try expect(addACL.0 == 0, "테스트 ACL을 설정하지 못했습니다.")
 
-  _ = try ImageSanitizer().sanitizePNGInPlace(at: file)
+  _ = try makeTestSanitizer(retiredInto: directory).replaceWithCleanPNG(at: file)
   var state = stat()
   try expect(lstat(file.path, &state) == 0, "정리된 파일 정보를 읽지 못했습니다.")
   try expect(state.st_mode & 0o7777 == 0o600, "원본의 0600 접근 권한이 보존되지 않았습니다.")
@@ -581,7 +591,7 @@ private func testCorruptInputIsUntouched() throws {
   let original = Data("not a png".utf8)
   try original.write(to: file)
   do {
-    _ = try ImageSanitizer().sanitizePNGInPlace(at: file)
+    _ = try makeTestSanitizer(retiredInto: directory).replaceWithCleanPNG(at: file)
     throw SelfTestError.assertion("손상된 입력을 성공으로 처리했습니다.")
   } catch let selfTestError as SelfTestError {
     throw selfTestError
@@ -705,7 +715,7 @@ private func testSymbolicLinkIsRejected() throws {
   try FileManager.default.createSymbolicLink(at: symbolicLink, withDestinationURL: original)
 
   do {
-    _ = try ImageSanitizer().sanitizePNGInPlace(at: symbolicLink)
+    _ = try makeTestSanitizer(retiredInto: directory).replaceWithCleanPNG(at: symbolicLink)
     throw SelfTestError.assertion("심볼릭 링크를 원본 교체 대상으로 처리했습니다.")
   } catch let selfTestError as SelfTestError {
     throw selfTestError
@@ -725,7 +735,7 @@ private func testHardLinkIsNotReplacedInPlace() throws {
 
   try expect(!ImageInputLocationPolicy.canReplaceInPlace(original), "하드 링크 입력을 원본 교체 대상으로 판정했습니다.")
   do {
-    _ = try ImageSanitizer().sanitizePNGInPlace(at: original)
+    _ = try makeTestSanitizer(retiredInto: directory).replaceWithCleanPNG(at: original)
     throw SelfTestError.assertion("하드 링크 원본을 영구 교체했습니다.")
   } catch let selfTestError as SelfTestError {
     throw selfTestError
@@ -870,7 +880,7 @@ private func testMalformedCorpusNeverCorruptsInput() throws {
     let file = directory.appendingPathComponent("mutated-\(index).png")
     try mutated.write(to: file)
     do {
-      _ = try ImageSanitizer().sanitizePNGInPlace(at: file)
+      _ = try makeTestSanitizer(retiredInto: directory).replaceWithCleanPNG(at: file)
       _ = try ImageSanitizer().verifyCanonicalPNG(at: file)
     } catch {
       try expect(
@@ -1368,7 +1378,7 @@ private func testReadOnlyDirectoryNeverDamagesOriginal() throws {
   let sanitizer = ImageSanitizer()
   var replaced = false
   do {
-    _ = try sanitizer.sanitizePNGInPlace(at: source)
+    _ = try makeTestSanitizer(retiredInto: directory).replaceWithCleanPNG(at: source)
     replaced = true
   } catch {
     // Any failure is acceptable here; silent corruption is not.
@@ -1504,6 +1514,49 @@ private func testOriginalDisposalOnlyRetiresWhatItShould() throws {
   }
 }
 
+private func testCleanResultInheritsNameAndPermissions() throws {
+  let directory = try makeTemporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let retired = directory.appendingPathComponent("retired", isDirectory: true)
+  try FileManager.default.createDirectory(at: retired, withIntermediateDirectories: true)
+  let sanitizer = makeTestSanitizer(retiredInto: retired)
+
+  // A PNG keeps its exact name, so references to it do not break.
+  let png = directory.appendingPathComponent("keeps-name.png")
+  let originalPNG = try makeImageData(type: "public.png" as CFString, metadata: true)
+  try originalPNG.write(to: png)
+  try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: png.path)
+  let pngReport = try sanitizer.replaceWithCleanPNG(at: png)
+  try expect(
+    pngReport.url.standardizedFileURL == png.standardizedFileURL,
+    "정리본이 원본 이름을 물려받지 못했습니다: \(pngReport.url.lastPathComponent)")
+  _ = try sanitizer.verifyCanonicalPNG(at: png)
+  try expect(
+    (try Data(contentsOf: png)) != originalPNG, "원본이 정리되지 않았습니다.")
+
+  // Access rules travel with it: a 0600 file must not reappear world-readable.
+  let mode =
+    try FileManager.default.attributesOfItem(atPath: png.path)[.posixPermissions]
+    as? NSNumber
+  try expect(mode?.int16Value == 0o600, "권한이 승계되지 않았습니다: \(String(describing: mode))")
+
+  // The original is retired, not destroyed.
+  let retiredNames = try FileManager.default.contentsOfDirectory(atPath: retired.path)
+  try expect(
+    retiredNames.contains { $0.hasSuffix("keeps-name.png") },
+    "원본이 휴지통 경로로 옮겨지지 않았습니다: \(retiredNames)")
+
+  // A different input format takes the same name with a .png extension.
+  let jpeg = directory.appendingPathComponent("converted.jpg")
+  try makeImageData(type: "public.jpeg" as CFString, metadata: true).write(to: jpeg)
+  let jpegReport = try sanitizer.replaceWithCleanPNG(at: jpeg)
+  try expect(
+    jpegReport.url.lastPathComponent == "converted.png",
+    "변환 결과 이름이 예상과 다릅니다: \(jpegReport.url.lastPathComponent)")
+  try expect(
+    !FileManager.default.fileExists(atPath: jpeg.path), "원본 JPEG가 남았습니다.")
+}
+
 let tests: [(String, () throws -> Void)] = [
   ("PNG 메타데이터·알파·xattr 제거", testAggressiveSanitization),
   ("알파 하위 비트 은닉 payload 제거", testAlphaLowBitPayloadIsDestroyed),
@@ -1541,6 +1594,7 @@ let tests: [(String, () throws -> Void)] = [
   ("XPC 요청 값 왕복 보존", testServiceRejectsHostileRequestValues),
   ("검증이 깨끗한 결과만 통과", testVerificationAcceptsOnlyCleanResults),
   ("원본 휴지통 이동 판단", testOriginalDisposalOnlyRetiresWhatItShould),
+  ("정리본이 이름·권한을 승계", testCleanResultInheritsNameAndPermissions),
 ]
 
 do {
